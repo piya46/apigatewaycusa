@@ -1,0 +1,10 @@
+# Plesk Scheduled Tasks: Run a command with curl --config /private/path/to/this-file
+# Copy OUTSIDE the public Document Root, replace the placeholder, and chmod 600.
+url = "https://api.reunion.scicu-alumni.com/ping"
+header = "X-Ping-Secret: REPLACE_WITH_PING_SECRET_FROM_ENV"
+connect-timeout = 5
+max-time = 10
+fail
+silent
+show-error
+output = "/dev/null"

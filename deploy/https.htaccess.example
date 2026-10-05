@@ -1,0 +1,8 @@
+# Optional Apache fallback. On Plesk prefer the HTTPS redirect in Hosting Settings.
+# Retain Plesk's Passenger directives. Set Document Root to application-root/public.
+# App root and secrets must remain outside the document root.
+# If another TLS proxy sits before Apache, have HostAtom configure the HTTPS
+# condition at that trusted proxy to avoid redirect loops.
+RewriteEngine On
+RewriteCond %{HTTPS} !=on
+RewriteRule ^ https://api.reunion.scicu-alumni.com%{REQUEST_URI} [R=308,L]

@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+logs/
+coverage/
+tmp/
+dist/
+*.pem
+*.key
+.DS_Store
+npm-debug.log*
