@@ -159,10 +159,13 @@ List รับและ claim ตาม FIFO แต่หลาย process อ�
 ```sh
 npm run config:check
 npm run config:check -- --redis
+npm run deploy:check -- --url https://api.reunion.scicu-alumni.com
 npm run package:deploy
 ```
 
 `config:check` รายงานชื่อค่าที่ต้องแก้โดยไม่แสดง secret; `--redis` ตรวจ TLS/auth ด้วย PING และไม่แตะงานในคิว ส่วน `package:deploy` สร้าง `dist/reunion-gateway-plesk.zip` กับ SHA-256 โดยไม่รวม `.env`, logs หรือ node_modules
+
+`deploy:check` ใช้หลังติดตั้งเพื่อตรวจหน้าแอดมิน, assets, สิทธิ์เข้าถึง, HTTPS, path ภายใน และ LINE verification แบบ `events: []` โดยไม่สร้างงานในคิว เพิ่ม `--public` เพื่อไม่อ่าน/ส่ง secret ใช้ `REDIS_URL` จาก Upstash **Connect → TCP** แบบ `rediss://` ไม่ใช้ REST URL/token ดูรายละเอียดในคู่มือติดตั้ง
 
 ตั้ง keep-alive ทุก 5 นาทีผ่าน Plesk Scheduled Tasks → Run a command โดยใช้ [private curl config](deploy/keepalive.curl.example) ที่มี `X-Ping-Secret` ค่า `/ping` บอกเพียงว่า process ตอบสนอง ไม่ยืนยัน Redis และไม่รับประกันว่าผู้ให้บริการจะไม่ suspend process
 

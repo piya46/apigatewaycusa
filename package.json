@@ -12,6 +12,7 @@
     "test:redis": "node --test test/integration/*.test.js",
     "check": "node scripts/check.js",
     "config:check": "node scripts/check-config.js",
+    "deploy:check": "node scripts/check-deployment.js",
     "package:deploy": "node scripts/package-deploy.js",
     "dlq:replay": "node scripts/replay-dlq.js"
   },

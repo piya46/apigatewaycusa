@@ -59,9 +59,27 @@ Plesk อาจแสดงชื่อปุ่มต่างกันตา�
 
 `.env` ในเครื่องมี `INTERNAL_API_TOKEN` และ `PING_SECRET` ที่สุ่มไว้แล้ว ดู/คัดลอกค่าได้ใน IDE โดยไม่ต้องส่งเข้าห้องสนทนา ส่วนแพ็กเกจ ZIP ไม่มีค่าดังกล่าว
 
+### ใช้ Upstash Redis
+
+เปิด Upstash Console → ฐานข้อมูล Redis ที่สร้างไว้ → **Connect → TCP** แล้วคัดลอก connection string แบบ TLS ลง `REDIS_URL` ใน `.env` ทั้งบรรทัด ตัวอย่างโครงสร้าง:
+
+```dotenv
+REDIS_URL=rediss://default:YOUR_PASSWORD@YOUR_ENDPOINT:YOUR_PORT
+```
+
+แทนค่า password, endpoint และ port ตามฐานข้อมูลจริง หรือใช้ connection string ที่คัดลอกมาโดยตรง `rediss://:PASSWORD@HOST:PORT` ที่เว้น username ไว้ก็ใช้ได้ โครงการนี้ใช้ `ioredis` ผ่าน TCP/TLS จึงไม่ต้องเพิ่ม `UPSTASH_REDIS_REST_URL` หรือ `UPSTASH_REDIS_REST_TOKEN` ดู [วิธีคัดลอก connection string และเปิด TLS ของ Upstash](https://upstash.com/docs/redis/troubleshooting/econn_reset)
+
+หลังเติม `LINE_CHANNEL_SECRET` และค่าที่จำเป็นครบแล้ว รัน `npm run config:check -- --redis` เพื่อตรวจ TLS และ authentication ด้วย `PING` โดยไม่แก้ข้อมูลในคิว ควรรันจาก Plesk ด้วย เพราะการเชื่อมต่อจากเครื่องพัฒนาได้ไม่ได้ยืนยันว่าโฮสต์อนุญาต TCP ขาออก
+
 หากใส่ตัวแปรชื่อเดียวกันใน Custom Environment Variables ของ Plesk ค่าจาก Plesk จะถูกใช้แทน `.env` หลังเปลี่ยน environment ให้ Restart App ส่วนการแก้กฎผ่านหน้าแอดมินไม่ต้อง restart
 
 ให้ HostAtom ยืนยันว่า `TRUST_PROXY=loopback` ตรงกับ proxy จริง และ proxy เขียนทับ `X-Forwarded-Proto` เปิดใบรับรอง TLS กับการ redirect HTTP ไป HTTPS ใน Plesk หากมี Nginx หน้า Apache ให้ตั้ง redirect ที่ชั้น TLS ไม่ใช้ `.htaccess` จนเกิด loop
+
+### หากใบรับรอง TLS ไม่ตรงโดเมน Gateway
+
+ถ้าตรวจแล้วพบ `ERR_TLS_CERT_ALTNAME_INVALID` หรือ `TLS certificate does not cover this hostname` ให้เปิดโดเมน **`api.reunion.scicu-alumni.com`** ใน Plesk → **SSL/TLS Certificates** แล้วออก/ติดตั้งใบรับรอง Let's Encrypt ที่ครอบคลุมชื่อนี้ จากนั้นตรวจ **Hosting Settings / Hosting → Certificate** ว่าเลือกใบรับรองนั้นให้โดเมน Gateway แล้ว และเปิด redirect HTTP → HTTPS
+
+กรณีไม่มีเมนูออกใบรับรอง ให้ HostAtom ติดตั้งและผูกใบรับรองให้ชื่อโดเมนนี้ ดู [ขั้นตอน Let's Encrypt ของ Plesk](https://support.plesk.com/hc/en-us/articles/43603461610519-How-to-install-Let-s-Encrypt-SSL-certificate-for-a-domain-in-Plesk) การมีใบรับรองที่โดเมน SSO ไม่ได้ยืนยันว่า Gateway ใช้ใบรับรองถูกต้อง หลังแก้แล้วรัน `deploy:check -- --url https://api.reunion.scicu-alumni.com --public` อีกครั้ง
 
 ## 4. ลงทะเบียน SSO และเปิดหน้าจัดการ
 
@@ -97,6 +115,20 @@ Gateway ใช้ `/api/sso/authorize`, `/api/sso/token`, `/api/sso/introspect`,
 Keep-alive เป็น liveness เท่านั้น ไม่รับประกันว่าแพ็กเกจ shared hosting จะไม่ suspend process ให้ตรวจ idle timeout, outbound Redis TLS และข้อจำกัด background timers กับ HostAtom
 
 ## 6. ตรวจหลังติดตั้ง
+
+หลัง Restart App ใช้คำสั่งจากเครื่องที่เข้าถึงโดเมนได้:
+
+```sh
+# ตรวจเส้นทางสาธารณะ โดยไม่อ่านหรือส่ง secret จาก .env
+npm run deploy:check -- --url https://api.reunion.scicu-alumni.com --public
+
+# ตรวจเพิ่มด้วย PING_SECRET และ LINE_CHANNEL_SECRET จาก .env/Environment
+npm run deploy:check -- --url https://api.reunion.scicu-alumni.com
+```
+
+คำสั่งตรวจหน้าแอดมินและ assets, การบล็อกผู้ไม่เข้าสู่ระบบ, signature ของ LINE, การป้องกัน path ภายใน และ HTTPS โดยไม่ติดตาม redirect อัตโนมัติ จะส่ง secret เฉพาะ HTTPS หลังการตรวจสาธารณะผ่านแล้ว Payload ที่ลงนามใช้ `events: []` จึงไม่สร้างงานหรือเรียกแอปปลายทาง; ไม่อ่าน/แก้ routing และไม่แสดง response body หรือ secret ใช้ `HEAD` ตรวจ path ภายในเพื่อไม่ดาวน์โหลดเนื้อหาไฟล์หากตั้ง Document Root ผิด
+
+Exit code `0` = ผ่านรายการที่เลือก, `1` = มีรายการตรวจไม่ผ่าน, `2` = arguments หรือค่า secret ที่จำเป็นไม่ครบ โหมด `--public` ไม่ได้ตรวจ secret, Redis หรือการเข้าสู่ระบบ SSO จริง ให้ตรวจรายการด้านล่างเพิ่มเติม
 
 - `config:check` ผ่าน; ทดสอบ Redis TLS จากโฮสต์ด้วย `--redis`
 - เปิด `/admin/routes` แล้ว login ผ่าน SSO; ผู้ไม่มี role `admin` อ่าน/เขียนกฎไม่ได้
