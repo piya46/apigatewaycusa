@@ -49,6 +49,7 @@ function deploymentSecrets() {
   // Like dotenv's defaults, Plesk environment variables override the local file.
   return {
     pingSecret: process.env.PING_SECRET ?? values.PING_SECRET,
+    lineWebhookDestination: process.env.LINE_WEBHOOK_DESTINATION ?? values.LINE_WEBHOOK_DESTINATION,
     lineChannelSecret: process.env.LINE_CHANNEL_SECRET ?? values.LINE_CHANNEL_SECRET
   };
 }
@@ -73,7 +74,7 @@ async function readBounded(response) {
   }
 }
 
-async function checkDeployment({ origin, publicOnly = false, pingSecret, lineChannelSecret, fetchImpl = fetch, write = text => process.stdout.write(text), timeoutMs = 8000 }) {
+async function checkDeployment({ origin, publicOnly = false, pingSecret, lineChannelSecret, lineWebhookDestination, fetchImpl = fetch, write = text => process.stdout.write(text), timeoutMs = 8000 }) {
   let failed = 0;
   let passed = 0;
   async function check(label, endpoint, options, accepts) {
@@ -99,7 +100,7 @@ async function checkDeployment({ origin, publicOnly = false, pingSecret, lineCha
     && /text\/html/i.test(response.headers.get('content-type') || '')
     && Boolean(response.headers.get('content-security-policy'))
     && text.includes('id="editor"') && text.includes('/admin/assets/admin.js'));
-  for (const [file, marker] of [['admin.css', ':root'], ['admin.js', 'RoutingPreview'], ['routing-preview.js', 'previewRoute']]) {
+  for (const [file, marker] of [['admin.css', ':root'], ['admin.js', 'RoutingPreview'], ['line-contract.js', 'validMfa'], ['routing-preview.js', 'previewRoute']]) {
     await check(`Admin asset ${file}`, `/admin/assets/${file}`, {}, (response, text) => response.status === 200 && text.includes(marker)
       && (file.endsWith('.css') ? /text\/css/i : /javascript/i).test(response.headers.get('content-type') || ''));
   }
@@ -124,12 +125,15 @@ async function checkDeployment({ origin, publicOnly = false, pingSecret, lineCha
   // Only send credentials after the public checks identify the expected gateway.
   if (!publicOnly && !failed) {
     await check('Authenticated ping', '/ping', { headers: { 'x-ping-secret': pingSecret } }, jsonStatus(200, 'ok', true));
-    await check('Signed empty LINE verification', '/webhooks/line', {
-      method: 'POST', body: EMPTY_WEBHOOK,
-      headers: { 'content-type': 'application/json', 'x-line-signature': createHmac('sha256', lineChannelSecret).update(EMPTY_WEBHOOK).digest('base64') }
-    }, jsonStatus(200, 'ok', true));
+    if (/^U[0-9a-f]{32}$/.test(lineWebhookDestination || '')) {
+      const body = JSON.stringify({ destination: lineWebhookDestination, events: [] });
+      await check('Signed empty LINE verification (queued for SSO)', '/webhooks/line', {
+        method: 'POST', body,
+        headers: { 'content-type': 'application/json', 'x-line-signature': createHmac('sha256', lineChannelSecret).update(body).digest('base64') }
+      }, jsonStatus(200, 'ok', true));
+    } else write('[SKIP] Signed verification: set LINE_WEBHOOK_DESTINATION to the real OA bot user ID.\n');
   } else write(`[SKIP] Authenticated checks: ${publicOnly ? 'public-only mode' : 'fix public checks first'}.\n`);
-  write(`Deployment checks: ${passed} passed, ${failed} failed. No routing changes or queue jobs were created.\n`);
+  write(`Deployment checks: ${passed} passed, ${failed} failed. Signed verification may enqueue one empty SSO delivery; no MFA or chat events sent.\n`);
   write('Redis connectivity, SSO browser login and actual event delivery need separate checks.\n');
   return failed ? 1 : 0;
 }

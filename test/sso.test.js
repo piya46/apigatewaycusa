@@ -55,5 +55,9 @@ test('routing validates references, unique IDs, HTTPS targets and postback condi
     value => { value.rules[0].postback.value = ''; },
     value => { value.rules[0].enabled = 'true'; }
   ];
-  for (const change of changes) { const routing = defaultRouting(config); change(routing); assert.throws(() => validateRouting(routing)); }
+  for (const change of changes) {
+    const routing = defaultRouting(config);
+    routing.rules.push({ id: 'register', name: 'Register', enabled: true, eventType: 'postback', postback: { key: 'action', value: 'register' }, appId: 'chatbot' });
+    change(routing); assert.throws(() => validateRouting(routing));
+  }
 });

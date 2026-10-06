@@ -33,9 +33,13 @@ test('secure configuration defaults and mandatory TLS', () => {
     { INTERNAL_API_TOKEN: 'short' }, { PING_SECRET: '' },
     { FORWARD_TIMEOUT_MS: '9000' }, { FORWARD_TIMEOUT_MS: '3000ms' },
     { LOG_RETENTION_DAYS: '30' }, { JWT_ISSUER: 'issuer-without-key' },
-    { LOG_DIR: '/private/tmp/public_html/logs' }
+    { LOG_DIR: '/private/tmp/public_html/logs' }, { SSO_WEBHOOK_GATEWAY_TOKEN: 'g'.repeat(43) },
+    { LINE_WEBHOOK_DESTINATION: '@bot-id' },
+    { SSO_WEBHOOK_GATEWAY_TOKEN: 'invalid', LINE_WEBHOOK_DESTINATION: `U${'0'.repeat(32)}` },
+    { SSO_WEBHOOK_GATEWAY_TOKEN: 'g'.repeat(43), INTERNAL_API_TOKEN: 'g'.repeat(43), LINE_WEBHOOK_DESTINATION: `U${'0'.repeat(32)}` }
   ];
   for (const override of bad) assert.throws(() => loadConfig({ ...env, ...override }));
+  assert.equal(loadConfig({ ...env, SSO_WEBHOOK_GATEWAY_TOKEN: 'g'.repeat(43), LINE_WEBHOOK_DESTINATION: `U${'0'.repeat(32)}` }).ssoWebhookGatewayToken, 'g'.repeat(43));
 });
 
 test('rejects private paths under public_html including symlinked ancestors', t => {

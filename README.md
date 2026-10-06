@@ -1,6 +1,6 @@
 # SCICU Alumni Reunion API Gateway
 
-Node.js / Express gateway สำหรับ `api.reunion.scicu-alumni.com` รับ LINE webhook แล้วส่งต่อผ่าน Upstash Redis ให้ CUSA SSO หรือ Chatbot ตาม SRS ใช้ worker ภายใน process และ recursive `setTimeout` โดยทำงานทีละ event ต่อ process พร้อมหน้าแอดมินที่เชื่อม CUSA SSO สำหรับเพิ่มแอปและแก้กฎ routing ใน Redis
+Node.js / Express gateway สำหรับ `api.reunion.scicu-alumni.com` รับ LINE webhook แล้วส่งต่อผ่าน Upstash Redis ให้ CUSA SSO หรือ Chatbot ตาม SRS ใช้ worker ภายใน process และ recursive `setTimeout` โดยทำงานทีละ job ต่อ process พร้อมหน้าแอดมินที่เชื่อม CUSA SSO สำหรับเพิ่มแอปและแก้กฎ routing ใน Redis
 
 ## การทำงาน
 
@@ -10,7 +10,7 @@ flowchart LR
   Verify --> Queue[(Redis FIFO List)]
   Queue --> ACK[ตอบ HTTP 200]
   Queue --> Worker[Worker: claim และ SET NX EX 3600]
-  Worker -->|postback action=mfa| SSO[CUSA SSO]
+  Worker -->|postback cusa_mfa: raw LINE envelope| SSO[CUSA SSO]
   Worker -->|event อื่น| Bot[Chatbot]
   Worker -->|ID ซ้ำ| Drop[ลบงานซ้ำ]
   SSO -->|ล้มเหลว| DLQ[(Dead Letter Queue)]
@@ -27,7 +27,7 @@ flowchart LR
 | `/v1/admin/webhook-routing` | BFF session จาก SSO + role `admin`; CSRF สำหรับ PUT | GET อ่านกฎ / PUT บันทึกกฎพร้อม revision ป้องกันการเขียนทับ |
 | `/v1/*` อื่น | Bearer JWT แบบ RS256 | จุดสำหรับเพิ่ม CRUD; `503` หากยังไม่ตั้งค่า JWT, `401` หาก token ไม่ถูกต้อง, `404` หากยังไม่มี route |
 
-LINE verification payload ที่มี `events: []` ตอบ `200` โดยไม่สร้างงาน คำขอที่ signature ผิดตอบ `401`, JSON/schema ผิดตอบ `400`, เกิน 50KB ตอบ `413`, content type หรือ content encoding ที่ไม่รองรับตอบ `415` และ HTTP ที่ไม่เข้ารหัสตอบ `426` ใน production
+LINE verification payload ที่มี `events: []` บันทึกงานส่งข้อมูลดิบไป SSO แล้วตอบ `200` โดยไม่รอปลายทาง การ Verify ผ่านจึงยืนยันการรับเข้าคิวเท่านั้น ต้องตรวจผล worker/DLQ เพื่อยืนยัน SSO ด้วย คำขอที่ signature ผิดตอบ `401`, JSON/schema ผิดตอบ `400`, เกิน 50KB ตอบ `413`, content type หรือ content encoding ที่ไม่รองรับตอบ `415` และ HTTP ที่ไม่เข้ารหัสตอบ `426` ใน production
 
 ## เริ่มใช้งาน
 
@@ -47,7 +47,9 @@ chmod 600 .env
 | `REDIS_URL` | `rediss://default:<password>@<endpoint>:6379` จาก Upstash; URL-encode อักขระพิเศษใน password |
 | `INTERNAL_API_TOKEN` | Token ร่วมกับ SSO และ Chatbot อย่างน้อย 32 ตัวอักษร |
 | `PING_SECRET` | Secret สำหรับ cron อย่างน้อย 32 ตัวอักษร และควรต่างจาก token ภายใน |
-| `SSO_WEBHOOK_URL` | ไม่บังคับ: URL เริ่มต้นของแอป SSO ก่อนมี routing ใน Redis |
+| `SSO_WEBHOOK_URL` | URL SSO ที่ตรึงไว้ตอนส่ง: `https://sso.reunion.scicu-alumni.com/api/auth/line/webhook` |
+| `LINE_WEBHOOK_DESTINATION` | แนะนำ: bot userId ของ OA รูปแบบ `U` + hex ตัวเล็ก 32 ตัว; ตั้งให้ตรงฝั่ง SSO |
+| `SSO_WEBHOOK_GATEWAY_TOKEN` | Token เฉพาะ Gateway → SSO แบบ base64url 43 ตัว ตรงกับ `LINE_WEBHOOK_GATEWAY_TOKEN` ฝั่ง SSO; ต้องตั้ง destination ด้วย |
 | `CHATBOT_WEBHOOK_URL` | ไม่บังคับ: URL เริ่มต้นของแอป Chatbot ก่อนมี routing ใน Redis |
 | `TRUST_PROXY` | IP/CIDR ของ reverse proxy ที่เชื่อถือได้; ค่า `loopback` ในตัวอย่างต้องตรวจให้ตรงกับโฮสต์ |
 
@@ -61,7 +63,18 @@ Production ต้องให้ HTTPS reverse proxy ส่งมายังแ
 
 ## สัญญาการส่งต่อ
 
-กฎเริ่มต้นส่ง event `type=postback` ซึ่ง `postback.data` มี `action=mfa` หนึ่งค่า เช่น `action=mfa&challenge=abc` ไป SSO; event อื่นไป Chatbot ไม่ใช้ substring matching; `action=not-mfa` และพารามิเตอร์ action ซ้ำไม่ตรงกฎ MFA
+ใช้สัญญา CUSA จริง: postback ที่มีพารามิเตอร์ `cusa_mfa` สงวนให้ SSO และตรวจก่อนกฎทั่วไปเสมอ รูปแบบคือ `cusa_mfa=<UUID>&choice=<opaque base64url 43 ตัว>` ต้องมีสองพารามิเตอร์นี้อย่างละหนึ่งค่า, source เป็น user, userId ถูกต้อง และ timestamp ต่างจากเวลาปัจจุบันไม่เกิน 180 วินาที ค่า `choice` ไม่ใช่ approve/deny หรือเลขที่แสดงบนปุ่ม
+
+MFA ที่ไม่ผ่านจะไม่เข้าสู่ Chatbot หากทั้ง batch ไม่มี MFA ที่ผ่านจะทิ้งงาน SSO; ถ้ามี MFA ที่ผ่านอย่างน้อยหนึ่งรายการ ส่ง raw batch เดิมหนึ่งครั้งและให้ SSO ตรวจแต่ละ event อีกครั้ง การอนุมัติ challenge เป็นหน้าที่ SSO ส่วน message (รวมเลขที่พิมพ์เอง), follow/unfollow, accountLink และ postback อื่นยังใช้กฎทั่วไป/แอปสำรอง `action=mfa` ไม่ใช่รูปแบบ MFA ของ CUSA
+
+สัญญาส่งต่อมีสองชื่อที่กำหนดเวอร์ชันไว้ในโครงการ ดู [WEBHOOK-CONTRACT.md](deploy/WEBHOOK-CONTRACT.md) สำหรับ headers, การยืนยันตัวตน และการติดตั้งร่วมกับ SSO ทั้งสองรูปแบบใช้ HTTPS, POST, ไม่ตาม redirect และไม่ส่ง cookie/Authorization จากผู้ใช้ต่อ
+
+| รูปแบบ | ปลายทาง | ข้อมูลและการยืนยันตัวตน |
+| --- | --- | --- |
+| `line-raw-v1` | CUSA SSO เท่านั้น | raw bytes **ทั้ง batch** และ `X-Line-Signature` เดิม + Bearer token จาก configuration; ไม่ stringify/แยก/เซ็น LINE ใหม่ |
+| `event-json-v1` | Chatbot/แอปทั่วไป | `{destination, events: [event]}` + Bearer `INTERNAL_API_TOKEN`, `Idempotency-Key` และ `X-Webhook-Event-Id`; ไม่ส่ง LINE signature |
+
+SSO จึงอาจเห็น event อื่นที่อยู่ใน signed batch เดียวกับ MFA แต่ SSO ประมวลผลเฉพาะ MFA ที่ตรวจผ่าน Gateway จะไม่ส่ง raw batch หรือข้อมูล MFA ไปแอปทั่วไป การแยก batch ก่อนส่ง SSO ทำไม่ได้โดยยังเก็บลายเซ็นเดิมไว้
 
 **เพิ่มแอปและเปลี่ยนเงื่อนไขที่ `/admin/routes`** ข้อมูลชื่อแอป, URL, event type, เงื่อนไข postback, ลำดับ/สถานะกฎ และแอปสำรองเก็บใน `webhook:config:routing` ไม่ใช้ `MFA_POSTBACK_PARAM`/`MFA_POSTBACK_VALUE` ใน `.env` อีกต่อไป Worker อ่านค่าปัจจุบันสำหรับทุกงานและใช้กฎแรกที่ตรง บันทึกแล้วมีผลกับงานถัดไปโดยไม่ restart รวมถึงงานที่ replay
 
@@ -76,27 +89,9 @@ Production ต้องให้ HTTPS reverse proxy ส่งมายังแ
 
 ตัวนับด้านบนแสดงเวลาที่เหลือของเซสชัน หากหมดอายุ ฉบับแก้ไขยังอยู่ในหน้าเดิม ใช้ **เข้าสู่ระบบใหม่** ในแท็บใหม่ แล้วกลับมากด **ตรวจสอบการเข้าสู่ระบบ** เพื่อบันทึกต่อ ไม่เก็บฉบับแก้ไขหรือ token ลง localStorage; หากปิดหรือโหลดหน้าเดิมใหม่ ฉบับแก้ไขจะหาย เมนูคู่มือและกล่องแก้ไขรองรับคีย์บอร์ด/Escape และภาพเคลื่อนไหวเคารพ `prefers-reduced-motion`
 
-`SSO_WEBHOOK_URL` และ `CHATBOT_WEBHOOK_URL` เป็นค่า bootstrap ที่เลือกตั้งได้เฉพาะตอน Redis ยังไม่มีกฎ ค่าเริ่มต้นคือ URL ตาม SRS หลังมีข้อมูลใน Redis แล้วให้เปลี่ยนผ่านหน้าแอดมินเท่านั้น
+`CHATBOT_WEBHOOK_URL` เป็นค่า bootstrap เท่านั้น ส่วน URL ของแอป `sso` ต้องตรงกับ `SSO_WEBHOOK_URL` ในเซิร์ฟเวอร์และแก้ผ่านหน้าเว็บไม่ได้ เพื่อผูกข้อมูลดิบ/ลายเซ็น/token กับปลายทางที่กำหนดไว้ แอป `sso` ลบไม่ได้ และใช้ในกฎทั่วไปหรือเป็น fallback ไม่ได้
 
-ทุก request ปลายทางเป็น `POST` และมี headers:
-
-```text
-Content-Type: application/json
-Authorization: Bearer <INTERNAL_API_TOKEN>
-X-Webhook-Event-Id: <webhookEventId>
-Idempotency-Key: <webhookEventId>
-```
-
-Body เป็น LINE envelope ที่เก็บ `destination` และ **หนึ่ง event ต่อ request**:
-
-```json
-{
-  "destination": "U...",
-  "events": [{ "type": "postback", "webhookEventId": "...", "postback": { "data": "action=mfa" } }]
-}
-```
-
-Event object รวมทั้ง `replyToken`, source และข้อมูลอื่นภายใน event ถูกเก็บตามที่ได้รับ ไม่ส่ง `x-line-signature` เดิมต่อ เพราะ body ถูกแยกเป็นราย event แล้ว **SSO และ Chatbot ต้องตรวจ Internal API Token ของ gateway** หากปลายทางเดิมรับเฉพาะ LINE signature ต้องปรับให้รองรับสัญญานี้
+หน้าทดลองมีปุ่มตัวอย่าง LINE MFA และช่องจำลอง source, userId, อายุ event ผลจำลองใช้ตัวตรวจเดียวกับ worker แต่ไม่ตรวจสถานะ challenge หรือส่ง HTTP จริง
 
 HTTP `2xx` ถือว่าสำเร็จ; `3xx`, `4xx`, `5xx`, timeout และ network error เข้า DLQ ทั้งหมด ระบบไม่ตาม redirect เพื่อไม่ส่ง token ไปยัง URL ใหม่ Timeout ค่าเริ่มต้น 4 วินาที ปรับได้ 3–5 วินาที และไม่อ่าน response body มาบันทึก
 
@@ -109,11 +104,12 @@ HTTP `2xx` ถือว่าสำเร็จ; `3xx`, `4xx`, `5xx`, timeout �
 | `webhook:idempotency:{webhookEventId}` | String | `SET NX EX 3600` ก่อน forward; เก็บ job ID ที่จอง event |
 | `webhook:processing:events` | Hash | เก็บงานที่ worker claim แต่ยังไม่จบ โดยใช้ receipt ID |
 | `webhook:processing:leases` | Sorted set | เวลาหมดอายุของ claim ตามนาฬิกา Redis |
-| `webhook:config:routing` | String / JSON | แอป กฎ แอปสำรอง และ revision; ไม่มี TTL |
+| `webhook:config:routing` | String / JSON | แอป กฎ แอปสำรอง และ revision; schema version 2 ไม่มี TTL |
+| `webhook:config:routing:backup:v1` | String / JSON | สำเนา routing ก่อน migration; ไม่เขียนทับ backup เดิม |
 | `webhook:auth:state:{hash}` | String / JSON | PKCE verifier กับ browser binding; TTL 600 วินาที ใช้ได้ครั้งเดียว |
 | `webhook:auth:session:{hash}` | String / JSON | SSO access token กับ CSRF token; TTL ไม่เกิน 300 วินาที |
 
-Main queue เก็บ JSON `{version, id, receivedAt, payload}` หนึ่ง event ต่อ job การตรวจ capacity และเพิ่มทุก event ใน request ใช้ Lua script เดียว จึงไม่มีการรับเพียงบางส่วนของ batch ค่า `QUEUE_MAX_LENGTH` นับรวมงานที่กำลังทำอยู่ เมื่อเต็มจะปฏิเสธ request ใหม่ด้วย `503` โดยไม่ลบงานเก่า
+Main queue เก็บ JSON version 1 `{version, id, receivedAt, payload}` สำหรับ event ปกติหนึ่งรายการต่อ job และ version 2 `{version, kind: "line-raw", id, receivedAt, rawBody, signature, eventIds}` สำหรับ SSO หนึ่ง raw batch ต่อ job โดย rawBody เป็น base64 ของ bytes เดิม การตรวจ capacity และเพิ่มทุก event ใน request ใช้ Lua script เดียว จึงไม่มีการรับเพียงบางส่วนของ batch ค่า `QUEUE_MAX_LENGTH` นับรวมงานที่กำลังทำอยู่ เมื่อเต็มจะปฏิเสธ request ใหม่ด้วย `503` โดยไม่ลบงานเก่า
 
 Claim จะย้าย payload ไป processing แบบ atomic ก่อนคืนให้ worker; ack จะลบ processing หลังสำเร็จ ส่วนการเข้า DLQ และลบ processing ใช้ script เดียวกัน หาก process ถูก kill หรือบันทึกผลไม่ได้เพราะ Redis ขัดข้อง งานจะยังอยู่ใน processing เมื่อ lease หมดอายุ (เริ่มต้น 30 วินาที) worker ที่ทำงานรอบต่อไปจะย้ายเข้า DLQ ด้วย `interrupted` เพื่อให้ผู้ดูแลตรวจผลก่อนส่งซ้ำ ไม่มีการกู้คืนขณะที่ทุก process ถูก suspend
 
@@ -128,7 +124,7 @@ DLQ เก็บข้อมูลดังนี้; `rawJob` เป็น JSON
 }
 ```
 
-`error.kind` ใช้ `http_error`, `timeout`, `network_error`, `invalid_job` หรือ `interrupted` โดยไม่มี exception message, response body หรือ URL ใน metadata งานที่หมด lease อาจไม่มี `target` เนื่องจากไม่ทราบว่าส่งถึงขั้นตอนไหนแล้ว
+`error.kind` ใช้ `http_error`, `timeout`, `network_error`, `invalid_job`, `interrupted`, `missing_original`, `partial_duplicate` หรือ `delivery_contract` โดยไม่มี exception message, response body หรือ URL ใน metadata งานที่หมด lease อาจไม่มี `target` เนื่องจากไม่ทราบว่าส่งถึงขั้นตอนไหนแล้ว
 
 ส่งงานเก่าสุดใน DLQ กลับเข้าคิวทีละหนึ่งงาน:
 
@@ -139,6 +135,8 @@ npm run dlq:replay -- --oldest
 คำสั่งจะย้ายงานและลบ idempotency marker ที่เป็นของ job นั้นแบบ atomic โดยไม่พิมพ์ payload หากมี marker ของงานใหม่กว่า จะคืน `conflict` และคง DLQ ไว้ ถ้าคิวเต็มคืน `full`; งานที่อ่านไม่ได้คืน `invalid`; ไม่มีงานคืน `empty` คำสั่งนี้มีไว้ให้ผู้ดูแลรันหลังตรวจและแก้เหตุขัดข้อง
 
 การส่ง HTTP กับการบันทึกผลใน Redis ไม่ใช่ transaction เดียวกัน จึง **ไม่รับประกัน exactly-once** หากปลายทางรับแล้วแต่การตอบกลับหาย งานอาจเข้า DLQ ทั้งที่ปลายทางทำงานแล้ว ต้องตรวจสถานะก่อน replay โดยเฉพาะ MFA และให้ปลายทางรองรับ `Idempotency-Key` ด้วย การ deduplicate ของ gateway มีอายุ 1 ชั่วโมงและยังคง marker สำหรับงานล้มเหลวจนหมดอายุหรือ replay อย่างชัดเจน
+
+MFA หลาย event ใน batch เดียวรวมเป็น raw job หนึ่งงานที่ตำแหน่ง MFA แรก ตรวจ duplicate ID ทั้ง batch แบบ atomic ถ้ามี ID ซ้ำบางส่วนจะเข้า DLQ `partial_duplicate` เพราะไม่สามารถตัดข้อมูลโดยรักษาลายเซ็นเดิมได้ ดู [สัญญาการส่งต่อ](deploy/WEBHOOK-CONTRACT.md)
 
 List รับและ claim ตาม FIFO แต่หลาย process อาจทำงานเสร็จสลับลำดับ และ LINE redelivery อาจเข้ามาผิดลำดับเวลา event หากต้องการลำดับการส่งต่อแบบเข้มงวด ให้ตั้ง Passenger เป็นหนึ่ง app process และตรวจ `timestamp` ตามธุรกิจ
 
@@ -165,7 +163,7 @@ npm run package:deploy
 
 `config:check` รายงานชื่อค่าที่ต้องแก้โดยไม่แสดง secret; `--redis` ตรวจ TLS/auth ด้วย PING และไม่แตะงานในคิว ส่วน `package:deploy` สร้าง `dist/reunion-gateway-plesk.zip` กับ SHA-256 โดยไม่รวม `.env`, logs หรือ node_modules
 
-`deploy:check` ใช้หลังติดตั้งเพื่อตรวจหน้าแอดมิน, assets, สิทธิ์เข้าถึง, HTTPS, path ภายใน และ LINE verification แบบ `events: []` โดยไม่สร้างงานในคิว เพิ่ม `--public` เพื่อไม่อ่าน/ส่ง secret ใช้ `REDIS_URL` จาก Upstash **Connect → TCP** แบบ `rediss://` ไม่ใช้ REST URL/token ดูรายละเอียดในคู่มือติดตั้ง
+`deploy:check` ใช้หลังติดตั้งเพื่อตรวจหน้าแอดมิน, assets, สิทธิ์เข้าถึง, HTTPS, path ภายใน และ LINE verification แบบ `events: []` ซึ่งเข้าคิวเพื่อส่งต่อ SSO (ไม่มี event สำหรับ MFA/ข้อความ); ต้องตั้ง `LINE_WEBHOOK_DESTINATION` จริง มิฉะนั้นข้าม signed verification เพิ่ม `--public` เพื่อไม่อ่าน/ส่ง secret ใช้ `REDIS_URL` จาก Upstash **Connect → TCP** แบบ `rediss://` ไม่ใช้ REST URL/token ดูรายละเอียดในคู่มือติดตั้ง
 
 ตั้ง keep-alive ทุก 5 นาทีผ่าน Plesk Scheduled Tasks → Run a command โดยใช้ [private curl config](deploy/keepalive.curl.example) ที่มี `X-Ping-Secret` ค่า `/ping` บอกเพียงว่า process ตอบสนอง ไม่ยืนยัน Redis และไม่รับประกันว่าผู้ให้บริการจะไม่ suspend process
 
@@ -181,7 +179,7 @@ API key อยู่ฝั่ง backend และส่งเป็น `X-API-K
 
 การบันทึก routing ต้องผ่าน same-origin + CSRF check และ role admin กฎมี revision; ถ้ามีผู้ดูแลอีกคนบันทึกก่อน จะได้ `409` ให้โหลดใหม่ ข้อมูลผิดหรือ URL ไม่ใช่ HTTPS ตอบ `400`; Redis/SSO ใช้งานไม่ได้จะปฏิเสธการทำงาน
 
-OpenAPI นี้ไม่ได้ระบุ `/api/line/mfa` จึงยังต้องยืนยันสัญญาปลายทาง LINE MFA จาก SRS เดิมกับทีม SSO การ login ใช้ `SSO_API_KEY` ส่วน webhook forwarding ใช้ `INTERNAL_API_TOKEN` คนละค่าและคนละหน้าที่
+LINE MFA ใช้ `/api/auth/line/webhook` ตามโค้ด CUSA ปัจจุบัน แยกจาก OpenAPI สำหรับ SSO login การ login ใช้ `SSO_API_KEY`; webhook ใช้ LINE signature เดิมและ token เฉพาะตาม [สัญญาการเชื่อมต่อ](deploy/WEBHOOK-CONTRACT.md)
 
 ## JWT สำหรับ resource `/v1` ในอนาคต
 

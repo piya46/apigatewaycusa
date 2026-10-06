@@ -24,6 +24,9 @@ async function main(args = process.argv.slice(2)) {
     return 1;
   }
   process.stdout.write('Configuration OK. Secret values are not displayed.\n');
+  process.stdout.write('SSO delivery: original LINE body + signature; URL pinned to SSO_WEBHOOK_URL.\n');
+  process.stdout.write(config.ssoWebhookGatewayToken ? 'SSO gateway credential: dedicated token configured (must match SSO).\n' : 'SSO gateway credential: legacy compatibility; dedicated token not configured.\n');
+  process.stdout.write(config.lineWebhookDestination ? 'LINE destination: pinned.\n' : 'Recommendation: set LINE_WEBHOOK_DESTINATION on Gateway and SSO to pin the OA.\n');
   process.stdout.write(config.sso ? 'SSO admin login: configured.\n' : 'SSO admin login: not configured. Set SSO_APPLICATION_ID and SSO_API_KEY to enable it.\n');
   process.stdout.write(config.jwt ? 'JWT: configured.\n' : 'JWT: not configured; future /v1 resources will return 503.\n');
   if (!args.includes('--redis')) {

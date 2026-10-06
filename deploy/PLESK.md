@@ -90,13 +90,13 @@ REDIS_URL=rediss://default:YOUR_PASSWORD@YOUR_ENDPOINT:YOUR_PORT
 3. กำหนด **service-specific role `admin`** ให้ผู้ดูแลในแอปนี้ โดย introspection ต้องคืน `roles: ["admin"]` หรือมี `admin` รวมอยู่ด้วย สิทธิ์ CUSA Admin ส่วนกลางไม่ใช้แทน role ของแอป
 4. เปิด `https://api.reunion.scicu-alumni.com/admin/routes` แล้วกด “เข้าสู่ระบบด้วย CUSA SSO”
 5. เมนู “แอปปลายทาง” ใช้เพิ่มชื่อแอปกับ URL; เมนู “กฎส่งต่อ” ใช้เพิ่ม/ปิด/เรียงกฎและเลือกแอปสำรอง
-6. ใช้ “ทดลองเส้นทาง” ตรวจตัวอย่าง เช่น `postback` + `action=mfa` โดยไม่มีการส่ง event จริง จากนั้นกด “บันทึกการเปลี่ยนแปลง” เพื่อใช้กับงานถัดไป
+6. ใช้ “ทดลองเส้นทาง” กดตัวอย่าง LINE MFA (`cusa_mfa` + `choice`) โดยไม่มีการส่ง event จริง จากนั้นกด “บันทึกการเปลี่ยนแปลง” เพื่อใช้กับงานถัดไป
 
 Gateway ใช้ `/api/sso/authorize`, `/api/sso/token`, `/api/sso/introspect`, `/api/sso/revoke` ตามไฟล์ OpenAPI เก็บ access token ใน Redis พร้อม TTL; เบราว์เซอร์ถือเพียง session cookie แบบ HttpOnly/Secure/SameSite=Lax ตรวจ `active`, `aud`, `exp`, `roles` และ `identity:read` ทุก protected operation โดยไม่ cache identity ฝั่ง gateway
 
 เมื่อครบอายุ token ให้เข้าสู่ระบบอีกครั้ง อาจมีหน้าขอ consent ตามนโยบาย SSO ระบบไม่มีการสร้าง refresh token หรือยืดอายุ session เอง หากมีฉบับแก้ไข ให้กด “เข้าสู่ระบบใหม่” เพื่อเปิดแท็บใหม่ แล้วกลับมายังหน้าเดิมและกด “ตรวจสอบการเข้าสู่ระบบ” เพื่อทำงานต่อโดยไม่เสียฉบับแก้ไข
 
-**SSO login API กับปลายทาง LINE MFA เป็นคนละสัญญา:** OpenAPI ที่ได้รับไม่มี `/api/line/mfa` ค่าเริ่มต้นของแอป SSO ใน routing จึงอ้างอิง SRS เดิม ต้องยืนยัน URL และการรับ `Authorization: Bearer <INTERNAL_API_TOKEN>` กับทีม SSO ก่อนใช้ LINE MFA จริง ส่วน login ใช้ `X-API-Key: <SSO_API_KEY>` ตาม OpenAPI
+**SSO login API และ LINE MFA ใช้คนละ credential:** login ใช้ `SSO_API_KEY`; LINE MFA ส่งไป `/api/auth/line/webhook` ด้วย raw LINE body + signature เดิม และ token เฉพาะ ดู [สัญญาการส่งต่อและตั้งค่าคู่กับ SSO](WEBHOOK-CONTRACT.md)
 
 ## 5. LINE และ Scheduled Tasks
 
@@ -126,16 +126,31 @@ npm run deploy:check -- --url https://api.reunion.scicu-alumni.com --public
 npm run deploy:check -- --url https://api.reunion.scicu-alumni.com
 ```
 
-คำสั่งตรวจหน้าแอดมินและ assets, การบล็อกผู้ไม่เข้าสู่ระบบ, signature ของ LINE, การป้องกัน path ภายใน และ HTTPS โดยไม่ติดตาม redirect อัตโนมัติ จะส่ง secret เฉพาะ HTTPS หลังการตรวจสาธารณะผ่านแล้ว Payload ที่ลงนามใช้ `events: []` จึงไม่สร้างงานหรือเรียกแอปปลายทาง; ไม่อ่าน/แก้ routing และไม่แสดง response body หรือ secret ใช้ `HEAD` ตรวจ path ภายในเพื่อไม่ดาวน์โหลดเนื้อหาไฟล์หากตั้ง Document Root ผิด
+คำสั่งตรวจหน้าแอดมินและ assets, การบล็อกผู้ไม่เข้าสู่ระบบ, signature ของ LINE, การป้องกัน path ภายใน และ HTTPS โดยไม่ติดตาม redirect อัตโนมัติ จะส่ง secret เฉพาะ HTTPS หลังการตรวจสาธารณะผ่านแล้ว Payload ที่ลงนามใช้ `events: []` และ destination จริงจาก `LINE_WEBHOOK_DESTINATION` จึงสร้างเฉพาะงาน verification ส่งต่อ SSO ไม่มี MFA/ข้อความจริง หากไม่ตั้ง destination จะข้ามรายการนี้ ตัว checker ไม่อ่าน/แก้ routing แต่ worker ที่รับงานจะอ่านและอาจย้าย routing รุ่นเก่าตามขั้นตอนอัปเกรด และไม่แสดง response body หรือ secret ใช้ `HEAD` ตรวจ path ภายในเพื่อไม่ดาวน์โหลดเนื้อหาไฟล์หากตั้ง Document Root ผิด
 
 Exit code `0` = ผ่านรายการที่เลือก, `1` = มีรายการตรวจไม่ผ่าน, `2` = arguments หรือค่า secret ที่จำเป็นไม่ครบ โหมด `--public` ไม่ได้ตรวจ secret, Redis หรือการเข้าสู่ระบบ SSO จริง ให้ตรวจรายการด้านล่างเพิ่มเติม
 
 - `config:check` ผ่าน; ทดสอบ Redis TLS จากโฮสต์ด้วย `--redis`
 - เปิด `/admin/routes` แล้ว login ผ่าน SSO; ผู้ไม่มี role `admin` อ่าน/เขียนกฎไม่ได้
 - เพิ่มกฎทดสอบแล้ว reload ต้องพบข้อมูลเดิม และ request ไม่มี CSRF token ต้องบันทึกไม่ได้
-- LINE Verify ผ่าน และ event จริงถึงแอปที่ถูกต้อง; `action=mfa` เป็นกฎเริ่มต้นใน Redis
+- LINE Verify ผ่าน และ event จริงถึงแอปที่ถูกต้อง; `cusa_mfa` เป็นเส้นทางที่ป้องกันไว้ไป SSO ก่อนกฎทั่วไป ต้องตรวจผล worker/DLQ เพิ่มจาก HTTP 200
 - `/ping` ที่ไม่มี secret ได้ `401`; Scheduled Task Run Now สำเร็จ
 - `/.env`, `/app.js`, `/src/config.js`, `/logs/` ไม่เปิดเผยไฟล์ผ่านโดเมน
 - กำหนด access log ของโฮสต์ไม่ให้เก็บ query string ของ `/auth/sso/callback` เพราะมี authorization code และไม่เปิด body/header logging ที่มี credentials
 
 Worker ใช้งานได้หลาย process แต่ถ้าต้องการลำดับการส่งเสร็จแบบ FIFO และ log writer เดียว ให้ HostAtom ตั้ง Passenger เป็นหนึ่ง app process ดูการกู้คืน DLQ และข้อจำกัด exactly-once ใน README
+
+
+## อัปเกรดเป็นสัญญา Webhook v1 ที่รองรับ SSO เดิม
+
+แพ็กเกจรุ่นนี้เปลี่ยน routing schema จาก 1 เป็น 2 และเพิ่ม raw-envelope job version 2 จึงต้อง **หยุด process รุ่นเก่าทั้งหมดก่อนเริ่มรุ่นใหม่** ไม่ deploy สลับรุ่นใน worker pool เดียวกัน เก็บสำเนาไฟล์รุ่นเดิมและ `.env` ไว้ในพื้นที่ private
+
+1. เตรียมโค้ดจาก `dist/reunion-gateway-plesk.zip` และอ่าน [WEBHOOK-CONTRACT.md](WEBHOOK-CONTRACT.md) ร่วมกับทีม SSO ไฟล์ zip ไม่มี `.env` จริง
+2. ตั้ง `SSO_WEBHOOK_URL=https://sso.reunion.scicu-alumni.com/api/auth/line/webhook` ทั้งใน `.env`/Plesk Environment ที่มีการ override อยู่ อย่าคัดลอก `.env.example` ทับ secrets เดิม
+3. รัน `npm run config:check -- --redis` และ `npm run routing:check` ด้วยโค้ดใหม่ที่ยังไม่เริ่ม app คำสั่งหลังอ่าน routing อย่างเดียว บอก `migration_ready` เมื่อย้ายได้ และไม่อ่านงานในคิว
+4. Stop/Disable Node.js application และให้ HostAtom ยืนยันว่า Passenger รุ่นเก่าหยุดทั้งหมด ก่อนแทนที่ source และ Start/Enable ใหม่ ใช้ช่วง maintenance สั้น ๆ และเปิด LINE redelivery
+5. การอ่าน routing ครั้งแรกจะสำรอง JSON เดิมที่ `webhook:config:routing:backup:v1` แล้วเปลี่ยน schema/revision แบบ atomic ลบเฉพาะกฎ `line-mfa / action=mfa` ที่เปิดใช้ตามค่าเริ่มต้นเดิม และแก้ URL SSO เก่าที่รู้จัก แอปและกฎทั่วไปที่เพิ่มเองคงอยู่ หากพบกฎ SSO ที่ปรับเอง/ปิดไว้หรือ SSO เป็น fallback จะไม่เดาแทนผู้ดูแล: `routing:check` แจ้งให้ตรวจและปรับแผนก่อน deploy
+6. เปิดหน้า admin ใหม่หลัง deploy ตรวจ SSO URL และแผง “CUSA MFA · เส้นทางที่ป้องกันไว้”; รัน `deploy:check`, กด Verify ใน LINE แล้วตรวจ log รหัส `event_forwarded` target `sso` กับ DLQ การได้ HTTP 200 ยืนยันเพียงการเข้าคิว
+7. งานเก่าแบบราย event ที่เป็น `cusa_mfa` แต่ไม่มี raw body/signature จะเข้า DLQ ด้วย `missing_original` ไม่สร้างลายเซ็นทดแทน ให้ผู้ใช้ขอ MFA ใหม่ ไม่ replay งาน MFA ที่หมดอายุ
+
+หากต้อง rollback: หยุดรุ่นใหม่ก่อน ตรวจคิว/processing/DLQ และเก็บ raw jobs version 2 ไว้ในพื้นที่ private อย่าให้ worker รุ่นเก่าอ่านงานเหล่านี้ จากนั้นจึงวาง source รุ่นเดิมและคืน routing จาก backup หลังผู้ดูแลตรวจว่ามีการแก้กฎใหม่หลังอัปเกรดหรือไม่ ไม่มีการลบคิวหรือคืน backup อัตโนมัติ

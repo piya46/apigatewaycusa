@@ -15,9 +15,9 @@ const { createQueue, KEYS } = require('../../src/queue');
 const { createApp } = require('../../src/app');
 const { Worker } = require('../../src/worker');
 const { parseJob } = require('../../src/payload');
-const { createRoutingStore, ROUTING_KEY } = require('../../src/routing-store');
+const { createRoutingStore, defaultRouting, ROUTING_KEY, ROUTING_BACKUP_KEY } = require('../../src/routing-store');
 const { createSsoService, sessionKey } = require('../../src/sso');
-const { config, logger, event, payload, sign, pause } = require('../helpers');
+const { config, logger, event, mfa, payload, sign, pause } = require('../helpers');
 
 async function freePort() {
   const server = net.createServer();
@@ -86,6 +86,7 @@ function childEnvironment(fixture, overrides = {}) {
     ...process.env, ENV_FILE: fixture.envFile, NODE_ENV: 'test', ENFORCE_HTTPS: 'false',
     HOST: '127.0.0.1', TRUST_PROXY: 'false', REDIS_URL: fixture.redisConfig.redisUrl,
     LINE_CHANNEL_SECRET: config.lineChannelSecret, INTERNAL_API_TOKEN: config.internalApiToken,
+    LINE_WEBHOOK_DESTINATION: '', SSO_WEBHOOK_GATEWAY_TOKEN: '',
     PING_SECRET: config.pingSecret, SSO_WEBHOOK_URL: config.ssoWebhookUrl,
     CHATBOT_WEBHOOK_URL: config.chatbotWebhookUrl,
     JWT_PUBLIC_KEY_PATH: '', JWT_ISSUER: '', JWT_AUDIENCE: '',
@@ -207,11 +208,11 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
     await reset();
     const sent = [];
     const worker = new Worker({ config, queue, routingStore, logger, forward: async (job, target) => {
-      sent.push([job.payload.events[0].webhookEventId, target.name]);
+      sent.push([job.kind === 'line-raw' ? job.eventIds[0] : job.payload.events[0].webhookEventId, target.name]);
       return target.name === 'sso' ? { ok: false, error: { kind: 'timeout' } } : { ok: true };
     } });
     const app = createApp({ config, queue, logger });
-    const raw = JSON.stringify(payload(event('a'), event('b', { type: 'postback', postback: { data: 'action=mfa' } }), event('a')));
+    const raw = JSON.stringify(payload(event('a'), mfa('b'), event('a')));
     assert.equal((await request(app).post('/webhooks/line').set('content-type', 'application/json').set('x-line-signature', sign(raw)).send(raw)).status, 200);
     assert.deepEqual(sent, []);
     for (let i = 0; i < 3; i++) await worker.tick();
@@ -223,7 +224,7 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
   await t.test('routing changes persist across instances and stale edits cannot overwrite newer changes', async () => {
     await reset();
     const first = await routingStore.get();
-    const second = createRoutingStore(redis, { ...config, ssoWebhookUrl: 'https://ignored.example.test' });
+    const second = createRoutingStore(redis, { ...config, chatbotWebhookUrl: 'https://ignored.example.test' });
     assert.deepEqual(await second.get(), first);
     first.apps.push({ id: 'new-app', name: 'New app', url: 'https://new.example.test/webhook' });
     first.fallbackAppId = 'new-app';
@@ -235,6 +236,85 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
     await redis.set(ROUTING_KEY, 'corrupt');
     await assert.rejects(second.get());
     assert.equal(await redis.get(ROUTING_KEY), 'corrupt');
+  });
+
+  await t.test('SSO batches preserve bytes once, reserve all event IDs atomically, and replay only owned markers', async () => {
+    await reset();
+    const input = payload(mfa('first'), event('chat'), mfa('second'));
+    const body = Buffer.from(JSON.stringify(input, null, 2) + '\n');
+    assert.equal(await queue.enqueue(input, { body, signature: sign(body) }), 2);
+    const claim = (await queue.claim()).job;
+    const job = parseJob(claim.raw);
+    assert.equal(job.kind, 'line-raw');
+    assert.deepEqual(Buffer.from(job.rawBody, 'base64'), body);
+    assert.deepEqual(job.eventIds, ['first', 'second']);
+    assert.equal(await queue.reserveEvent(claim, job), 'reserved');
+    for (const id of job.eventIds) {
+      assert.equal(await redis.get(KEYS.idempotency + id), job.id);
+      assert.ok(await redis.ttl(KEYS.idempotency + id) >= 3599);
+    }
+    await queue.fail(claim, { kind: 'timeout' }, 'sso');
+    assert.equal(await queue.replayOldest(), 'replayed');
+    for (const id of job.eventIds) assert.equal(await redis.get(KEYS.idempotency + id), null);
+    const chat = (await queue.claim()).job;
+    assert.equal(parseJob(chat.raw).payload.events[0].webhookEventId, 'chat');
+    assert.equal(parseJob(chat.raw).payload.events.length, 1);
+    await queue.ack(chat);
+    const replay = (await queue.claim()).job;
+    assert.equal(await queue.reserveEvent(replay, parseJob(replay.raw)), 'reserved');
+    await queue.fail(replay, { kind: 'timeout' }, 'sso');
+    await redis.set(KEYS.idempotency + 'second', 'newer-owner');
+    assert.equal(await queue.replayOldest(), 'conflict');
+    assert.equal(await redis.get(KEYS.idempotency + 'first'), job.id);
+    assert.equal(await redis.llen(KEYS.dlq), 1);
+  });
+
+  await t.test('overlapping raw batches neither resend duplicates nor reserve a subset', async () => {
+    await reset();
+    async function batch(...events) {
+      const input = payload(...events), body = Buffer.from(JSON.stringify(input));
+      await queue.enqueue(input, { body, signature: sign(body) });
+      const claim = (await queue.claim()).job;
+      return { claim, job: parseJob(claim.raw) };
+    }
+    const first = await batch(mfa('a'), mfa('b'));
+    assert.equal(await queue.reserveEvent(first.claim, first.job), 'reserved');
+    const duplicate = await batch(mfa('a'), mfa('b'));
+    assert.equal(await queue.reserveEvent(duplicate.claim, duplicate.job), 'duplicate');
+    const overlap = await batch(mfa('b'), mfa('c'));
+    assert.equal(await queue.reserveEvent(overlap.claim, overlap.job), 'partial_duplicate');
+    assert.equal(await redis.get(KEYS.idempotency + 'c'), null);
+  });
+
+  await t.test('empty verification is queued, delivered without event markers and recoverable', async () => {
+    await reset();
+    const input = payload(), body = Buffer.from(JSON.stringify(input));
+    assert.equal(await queue.enqueue(input, { body, signature: sign(body) }), 1);
+    const claim = (await queue.claim()).job, job = parseJob(claim.raw);
+    assert.deepEqual(job.eventIds, []);
+    assert.equal(await queue.reserveEvent(claim, job), 'reserved');
+    assert.deepEqual(await redis.keys(KEYS.idempotency + '*'), []);
+    await queue.fail(claim, { kind: 'http_error', status: 401 }, 'sso');
+    assert.equal(await queue.replayOldest(), 'replayed');
+  });
+
+  await t.test('legacy routing migration is atomic, backed up and cannot be overwritten by an old editor', async () => {
+    await reset();
+    const legacy = { ...defaultRouting(config), version: 1, rules: [
+      { id: 'line-mfa', name: 'LINE MFA', enabled: true, eventType: 'postback', postback: { key: 'action', value: 'mfa' }, appId: 'sso' }
+    ] };
+    legacy.apps[0].url = 'https://sso.reunion.scicu-alumni.com/api/line/mfa';
+    const raw = JSON.stringify(legacy);
+    await redis.set(ROUTING_KEY, raw);
+    const [one, two] = await Promise.all([routingStore.get(), createRoutingStore(redis, config).get()]);
+    assert.deepEqual(one, two);
+    assert.equal(one.version, 2);
+    assert.equal(one.apps[0].url, config.ssoWebhookUrl);
+    assert.equal(one.rules.length, 0);
+    assert.equal(await redis.get(ROUTING_BACKUP_KEY), raw);
+    await assert.rejects(routingStore.save(legacy));
+    await routingStore.get();
+    assert.equal(await redis.get(ROUTING_BACKUP_KEY), raw);
   });
 
   await t.test('SSO PKCE, one-time browser-bound state, session roles, CSRF and admin CRUD work together', async () => {
@@ -374,9 +454,18 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
       }
       assert.equal(response?.status, 200);
       const raw = JSON.stringify(payload());
-      const verify = await fetch(`http://127.0.0.1:${appPort}/webhooks/line`, {
-        method: 'POST', headers: { 'content-type': 'application/json', 'x-line-signature': sign(raw) }, body: raw
-      });
+      // /ping is intentionally live before Redis is ready. Empty verification
+      // now requires durable enqueue, so honor startup's retryable 503 contract.
+      let verify;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        verify = await fetch(`http://127.0.0.1:${appPort}/webhooks/line`, {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-line-signature': sign(raw) }, body: raw
+        });
+        if (verify.status === 200) { await verify.body.cancel(); break; }
+        assert.equal(verify.status, 503);
+        assert.equal((await verify.json()).error, 'queue_unavailable');
+        await pause(50);
+      }
       assert.equal(verify.status, 200);
       const exited = once(child, 'exit');
       if (mode === 'direct') child.kill('SIGTERM');

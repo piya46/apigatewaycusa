@@ -43,9 +43,19 @@ test('verifies signature before parsing and validates the complete batch', async
   }
 });
 
-test('LINE verification events:[] returns 200 without Redis work', async () => {
-  const app = setup({}, () => assert.fail('empty verification must not enqueue'));
+test('LINE verification events:[] durably queues original body and signature for SSO', async () => {
+  const app = setup({}, async (item, original) => {
+    assert.deepEqual(item.events, []);
+    assert.equal(original.body.toString(), JSON.stringify(payload()));
+    assert.equal(original.signature, sign(original.body));
+    return 1;
+  });
   assert.equal((await webhook(app, JSON.stringify(payload()))).status, 200);
+});
+
+test('destination pin rejects another OA after signature validation without enqueuing', async () => {
+  const app = setup({ lineWebhookDestination: `U${'1'.repeat(32)}` }, () => assert.fail('wrong OA'));
+  assert.equal((await webhook(app, JSON.stringify(payload(event())))).status, 401);
 });
 
 test('enforces 50KB and rejects unsupported/compressed bodies', async () => {

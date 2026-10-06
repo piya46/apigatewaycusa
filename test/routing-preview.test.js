@@ -6,11 +6,11 @@ const { previewRoute } = require('../public/admin/assets/routing-preview');
 const { routeEvent } = require('../src/routing');
 
 const routing = {
-  apps: [{ id: 'sso', name: 'SSO', url: 'https://sso.example.test/webhook' }, { id: 'chatbot', name: 'Chatbot', url: 'https://chat.example.test/webhook' }],
+  apps: [{ id: 'other', name: 'SSO', url: 'https://sso.example.test/webhook' }, { id: 'chatbot', name: 'Chatbot', url: 'https://chat.example.test/webhook' }],
   rules: [
-    { id: 'off', name: 'Disabled message', eventType: 'message', enabled: false, appId: 'sso' },
-    { id: 'mfa', name: 'MFA', eventType: 'postback', enabled: true, postback: { key: 'action', value: 'mfa' }, appId: 'sso' },
-    { id: 'follow', name: 'Follow', eventType: 'follow', enabled: true, appId: 'sso' }
+    { id: 'off', name: 'Disabled message', eventType: 'message', enabled: false, appId: 'other' },
+    { id: 'mfa', name: 'MFA', eventType: 'postback', enabled: true, postback: { key: 'action', value: 'mfa' }, appId: 'other' },
+    { id: 'follow', name: 'Follow', eventType: 'follow', enabled: true, appId: 'other' }
   ],
   fallbackAppId: 'chatbot'
 };

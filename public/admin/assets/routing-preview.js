@@ -3,7 +3,14 @@
 // A local simulation: no network requests or event delivery. Keep these matching
 // rules aligned with src/routing.js; routing-preview.test.js checks that contract.
 (function (root) {
+  const line = typeof module !== 'undefined' && module.exports ? require('./line-contract') : root.LineContract;
   function previewRoute(event, routing) {
+    if (line.isMfa(event)) {
+      const valid = line.validMfa(event);
+      return { app: valid ? routing.apps.find(app => app.id === 'sso') : undefined,
+        protected: true, drop: !valid,
+        steps: [{ id: 'cusa-mfa', name: 'CUSA MFA · เส้นทางที่ป้องกันไว้', reason: valid ? 'mfa' : 'invalid_mfa' }] };
+    }
     const steps = [];
     let matched;
     for (const rule of routing.rules) {

@@ -18,10 +18,11 @@ function createWebhooksRouter({ config, queue, logger }) {
       return res.status(400).json({ error: 'invalid_json' });
     }
     if (!validPayload(payload)) return res.status(400).json({ error: 'invalid_payload' });
-    // LINE's verification request has events: []; it creates no work.
-    if (!payload.events.length) return res.status(200).json({ ok: true });
+    if (config.lineWebhookDestination && payload.destination !== config.lineWebhookDestination) {
+      return res.status(401).json({ error: 'invalid_destination' });
+    }
     try {
-      const count = await queue.enqueue(payload);
+      const count = await queue.enqueue(payload, { body: req.body, signature: req.get('x-line-signature') });
       logger.info('webhook_queued', { count });
       return res.status(200).json({ ok: true });
     } catch {

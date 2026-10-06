@@ -23,16 +23,6 @@ function setup({ raw, reservation = 'reserved', result = { ok: true } } = {}) {
   return { worker: new Worker({ queue, routingStore, forward, config, logger }), calls, queue };
 }
 
-test('routes only exact, unambiguous action=mfa postbacks to SSO', () => {
-  for (const data of ['action=mfa', 'challenge=abc&action=mfa', 'action=%6dfa']) {
-    assert.equal(routeEvent(event('a', { type: 'postback', postback: { data } }), defaultRouting(config)).name, 'sso');
-  }
-  for (const data of ['action=not-mfa', 'note=action%3Dmfa', 'action=mfa-evil', 'action=mfa&action=other', 'mfa', '{"action":"mfa"}']) {
-    assert.equal(routeEvent(event('a', { type: 'postback', postback: { data } }), defaultRouting(config)).name, 'chatbot');
-  }
-  for (const type of ['message', 'follow', 'unfollow', 'postback']) assert.equal(routeEvent(event('a', { type }), defaultRouting(config)).name, 'chatbot');
-});
-
 test('a saved app and ordered rules change routing without changing environment', () => {
   const routing = defaultRouting(config);
   routing.apps.push({ id: 'registration', name: 'Registration', url: 'https://registration.example.test/webhook' });

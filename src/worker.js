@@ -2,6 +2,7 @@
 
 const { parseJob } = require('./payload');
 const { routeEvent } = require('./routing');
+const { isMfa, validMfa } = require('../public/admin/assets/line-contract');
 
 class Worker {
   constructor({ queue, routingStore, forward, config, logger }) {
@@ -43,12 +44,34 @@ class Worker {
     }
     // Resolve the current routing before reserving idempotency. Configuration
     // errors must not mark an event as delivered or silently choose a target.
-    const target = routeEvent(job.payload.events[0], await this.routingStore.get());
+    const routing = await this.routingStore.get();
+    let target;
+    if (job.kind === 'line-raw') {
+      if (job.payload.events.length && !job.payload.events.some(event => validMfa(event))) {
+        await this.queue.ack(claim);
+        this.logger.warn('event_dropped', { reason: 'invalid_mfa' });
+        return true;
+      }
+      const app = routing.apps.find(item => item.id === 'sso');
+      if (!app) throw new Error('Protected SSO target unavailable');
+      target = { name: 'sso', url: app.url, delivery: 'line-raw-v1' };
+    } else if (isMfa(job.payload.events[0])) {
+      // Old split jobs have no authentic raw bytes. Never invent a LINE signature.
+      await this.queue.fail(claim, { kind: 'missing_original' }, 'sso');
+      this.logger.warn('event_dead_lettered', { target: 'sso', reason: 'missing_original' });
+      return true;
+    } else target = routeEvent(job.payload.events[0], routing);
     const reserved = await this.queue.reserveEvent(claim, job);
     if (reserved === 'expired') return true;
     if (reserved === 'duplicate') {
       await this.queue.ack(claim);
       this.logger.info('event_duplicate');
+      return true;
+    }
+    if (reserved === 'partial_duplicate') {
+      // Filtering would invalidate LINE's signature; do not resend known events.
+      await this.queue.fail(claim, { kind: 'partial_duplicate' }, target.name);
+      this.logger.warn('event_dead_lettered', { target: target.name, reason: 'partial_duplicate' });
       return true;
     }
     if (reserved !== 'reserved') throw new Error('Unexpected reservation result');

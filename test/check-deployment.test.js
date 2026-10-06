@@ -13,7 +13,7 @@ function fixture() {
   const calls = [];
   const app = createApp({
     config: { ...config, enforceHttps: true, trustProxy: ['loopback'], sso: { redirectUri: origin + '/auth/sso/callback' } },
-    logger, queue: { enqueue() { assert.fail('deployment check must not create queue jobs'); } },
+    logger, queue: { async enqueue(value) { assert.deepEqual(value.events, []); return 1; } },
     routingStore: { get() { assert.fail('deployment check must not read private routing'); } },
     sso: { async authenticate() { throw new SsoError('unauthorized', 401); } }
   });
@@ -35,7 +35,7 @@ function fixture() {
 }
 function run(options) {
   let output = '';
-  return checkDeployment({ origin, pingSecret: config.pingSecret, lineChannelSecret: config.lineChannelSecret,
+  return checkDeployment({ origin, pingSecret: config.pingSecret, lineWebhookDestination: `U${'0'.repeat(32)}`, lineChannelSecret: config.lineChannelSecret,
     write: text => { output += text; }, ...options }).then(code => {
     for (const secret of [config.pingSecret, config.lineChannelSecret, 'PRIVATE_RESPONSE']) assert.ok(!output.includes(secret));
     return { code, output };
@@ -50,11 +50,11 @@ test('deployment CLI accepts only explicit HTTPS origins and known flags', () =>
     ['--url', origin, '--unknown'], ['--url', origin, '--url', origin]]) assert.throws(() => parseArgs(args));
 });
 
-test('deployment checks exercise Express without queue jobs, routing reads or credential-bearing HTTP requests', async () => {
+test('deployment checks exercise Express with only empty verification jobs and no routing reads or credential-bearing HTTP requests', async () => {
   const { fetchImpl, calls } = fixture();
   const result = await run({ fetchImpl });
   assert.equal(result.code, 0, result.output);
-  assert.match(result.output, /15 passed, 0 failed/);
+  assert.match(result.output, /16 passed, 0 failed/);
   assert.ok(calls.some(call => call.options.headers['x-line-signature']));
   assert.equal(calls.filter(call => call.options.method === 'HEAD').length, 4);
 });
@@ -63,7 +63,7 @@ test('public-only checks never send credentials even when values are supplied', 
   const { fetchImpl, calls } = fixture();
   const result = await run({ fetchImpl, publicOnly: true });
   assert.equal(result.code, 0, result.output);
-  assert.match(result.output, /13 passed, 0 failed/);
+  assert.match(result.output, /14 passed, 0 failed/);
   assert.ok(calls.every(call => !call.options.headers['x-line-signature'] && !call.options.headers['x-ping-secret']));
 });
 

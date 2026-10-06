@@ -75,6 +75,17 @@ function loadConfig(env = process.env) {
   }
 
   const jwtValues = [env.JWT_PUBLIC_KEY_PATH, env.JWT_ISSUER, env.JWT_AUDIENCE];
+  const lineWebhookDestination = env.LINE_WEBHOOK_DESTINATION || '';
+  const ssoWebhookGatewayToken = env.SSO_WEBHOOK_GATEWAY_TOKEN || '';
+  if (lineWebhookDestination && !/^U[0-9a-f]{32}$/.test(lineWebhookDestination)) {
+    throw new ConfigurationError('LINE_WEBHOOK_DESTINATION must be the OA bot user ID (U followed by 32 lowercase hex characters)');
+  }
+  if (ssoWebhookGatewayToken && (!/^[A-Za-z0-9_-]{43}$/.test(ssoWebhookGatewayToken) || !lineWebhookDestination)) {
+    throw new ConfigurationError('SSO_WEBHOOK_GATEWAY_TOKEN requires a 43-character base64url token and LINE_WEBHOOK_DESTINATION');
+  }
+  if (ssoWebhookGatewayToken && [env.LINE_CHANNEL_SECRET, env.INTERNAL_API_TOKEN, env.SSO_API_KEY, env.PING_SECRET].includes(ssoWebhookGatewayToken)) {
+    throw new ConfigurationError('SSO_WEBHOOK_GATEWAY_TOKEN must be a dedicated secret, different from other credentials');
+  }
   let sso;
   if ([env.SSO_APPLICATION_ID, env.SSO_API_KEY].some(Boolean)) {
     const applicationId = required('SSO_APPLICATION_ID');
@@ -112,11 +123,13 @@ function loadConfig(env = process.env) {
     enforceHttps: enforceHttps === 'true',
     trustProxy: trustProxy === 'false' ? false : trustProxy.split(',').map(value => value.trim()),
     lineChannelSecret: required('LINE_CHANNEL_SECRET'),
+    lineWebhookDestination,
+    ssoWebhookGatewayToken,
     redisUrl,
     internalApiToken: secret('INTERNAL_API_TOKEN'),
     pingSecret: secret('PING_SECRET'),
-    // Bootstrap URLs apply only when Redis has no routing configuration yet.
-    ssoWebhookUrl: endpoint('SSO_WEBHOOK_URL', 'https://sso.reunion.scicu-alumni.com/api/line/mfa'),
+    // SSO is also pinned here at delivery time; other apps remain UI-managed.
+    ssoWebhookUrl: endpoint('SSO_WEBHOOK_URL', 'https://sso.reunion.scicu-alumni.com/api/auth/line/webhook'),
     chatbotWebhookUrl: endpoint('CHATBOT_WEBHOOK_URL', 'https://chatbot.cusa.com/webhook'),
     forwardTimeoutMs: integer('FORWARD_TIMEOUT_MS', 4000, 3000, 5000),
     redisCommandTimeoutMs: integer('REDIS_COMMAND_TIMEOUT_MS', 1500, 100, 2000),

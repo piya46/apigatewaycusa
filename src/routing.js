@@ -1,6 +1,13 @@
 'use strict';
+const { isMfa, validMfa } = require('../public/admin/assets/line-contract');
 
 function routeEvent(event, routing) {
+  if (isMfa(event)) {
+    if (!validMfa(event)) return { drop: 'invalid_mfa' };
+    const sso = routing.apps.find(app => app.id === 'sso');
+    if (!sso) throw new Error('Protected SSO target unavailable');
+    return { name: 'sso', url: sso.url, delivery: 'line-raw-v1' };
+  }
   let appId = routing.fallbackAppId;
   for (const rule of routing.rules) {
     if (!rule.enabled || event.type !== rule.eventType) continue;
@@ -14,6 +21,7 @@ function routeEvent(event, routing) {
   }
   const app = routing.apps.find(item => item.id === appId);
   if (!app) throw new Error('Routing target unavailable');
+  if (app.id === 'sso') throw new Error('Generic events cannot target SSO');
   return { name: app.id, url: app.url };
 }
 

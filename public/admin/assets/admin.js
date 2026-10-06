@@ -130,7 +130,7 @@ $('open-help').addEventListener('click', () => { closeMenu(); $('help-dialog').s
 for (const node of document.querySelectorAll('[data-close-help]')) node.addEventListener('click', () => $('help-dialog').close());
 function appName(id) { return routing.apps.find(app => app.id === id)?.name || 'ไม่พบแอป'; }
 function appOptions(select, selected) {
-  select.replaceChildren(...routing.apps.map(app => {
+  select.replaceChildren(...routing.apps.filter(app => app.id !== 'sso').map(app => {
     const option = element('option', '', app.name); option.value = app.id; option.selected = app.id === selected; return option;
   }));
 }
@@ -157,7 +157,7 @@ function renderOverview() {
     node.append(element('span', 'rule-number', String(index + 1).padStart(2, '0')), copy, badge(rule.enabled ? 'เปิดใช้งาน' : 'ปิดอยู่', rule.enabled ? 'active-chip' : 'paused-chip'), icon('chevron'));
     return node;
   }));
-  if (!routing.rules.length) $('overview-rules').append(emptyState('เริ่มสร้างเส้นทางแรก', 'ตอนนี้ทุก event จะส่งไปยังแอปสำรอง', { label: 'เพิ่มกฎส่งต่อ', run: () => openRule() }));
+  if (!routing.rules.length) $('overview-rules').append(emptyState('เริ่มสร้างเส้นทางแรก', 'MFA ส่งไป SSO ผ่านเส้นทางที่ป้องกันไว้แล้ว ส่วน event อื่นส่งไปยังแอปสำรอง', { label: 'เพิ่มกฎส่งต่อ', run: () => openRule() }));
 }
 function renderRules(focusKey) {
   const query = $('rule-search').value.trim().toLocaleLowerCase(), filter = $('rule-filter').value;
@@ -190,7 +190,7 @@ function renderRules(focusKey) {
     }));
     row.append(element('span', 'rule-number', String(index + 1).padStart(2, '0')), main, actions); return row;
   }));
-  if (!matches.length) $('rules').append(emptyState(routing.rules.length ? 'ไม่พบกฎที่ค้นหา' : 'ยังไม่มีกฎส่งต่อ', routing.rules.length ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ' : 'ทุก event จะส่งไปยังแอปสำรองจนกว่าจะเพิ่มกฎ', routing.rules.length ? { label: 'ล้างตัวกรอง', run: () => { $('rule-search').value = ''; $('rule-filter').value = 'all'; renderRules(); updateSaveState(); } } : { label: 'เพิ่มกฎส่งต่อ', run: () => openRule() }));
+  if (!matches.length) $('rules').append(emptyState(routing.rules.length ? 'ไม่พบกฎที่ค้นหา' : 'ยังไม่มีกฎส่งต่อ', routing.rules.length ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ' : 'MFA ส่งไป SSO เสมอ ส่วน event อื่นส่งไปยังแอปสำรอง', routing.rules.length ? { label: 'ล้างตัวกรอง', run: () => { $('rule-search').value = ''; $('rule-filter').value = 'all'; renderRules(); updateSaveState(); } } : { label: 'เพิ่มกฎส่งต่อ', run: () => openRule() }));
   if (focusKey) {
     const focus = [...$('rules').querySelectorAll('[data-focus]')].find(node => node.dataset.focus === focusKey);
     if (focus && focus.dataset.boundary !== 'true') focus.focus({ preventScroll: true });
@@ -205,12 +205,13 @@ function renderApps() {
     mark.append(icon('apps')); head.append(mark);
     if (app.id === routing.fallbackAppId) head.append(badge('แอปสำรอง', 'default-chip'));
     const meta = element('div', 'app-meta'), count = routing.rules.filter(rule => rule.appId === app.id).length;
-    meta.append(badge(`${count} กฎอ้างอิง`), badge('HTTPS', 'active-chip'));
+    meta.append(badge(`${count} กฎอ้างอิง`), badge('HTTPS', 'active-chip'), badge(app.id === 'sso' ? 'LINE เดิม + Gateway token' : 'JSON ราย event + Gateway token'));
     const actions = element('div', 'app-card-actions');
     actions.append(button('แก้ไขแอป', () => openApp(app), 'button secondary', 'edit'), iconButton(`คัดลอก URL ${app.name}`, 'copy', async () => {
       try { await navigator.clipboard.writeText(app.url); status('คัดลอก URL แล้ว'); }
       catch { status('คัดลอกอัตโนมัติไม่ได้ สามารถเลือก URL แล้วคัดลอกได้โดยตรง', true); }
     }), iconButton(`ลบแอป ${app.name}`, 'trash', async () => {
+      if (app.id === 'sso') return status('CUSA SSO เป็นปลายทาง MFA ที่ระบบป้องกันไว้ จึงลบไม่ได้', true);
       if (count || app.id === routing.fallbackAppId) { status('เปลี่ยนแอปสำรองและกฎที่อ้างถึงแอปนี้ก่อนลบ', true, { label: 'ไปยังกฎส่งต่อ', run: () => switchView('rules') }); window.scrollTo({ top: 0, behavior: 'instant' }); return; }
       if (await confirmAction('ลบแอปปลายทางนี้?', `ลบ “${app.name}” ออกจากฉบับแก้ไข การลบจะมีผลเมื่อบันทึก`, 'ลบแอป')) {
         routing.apps = routing.apps.filter(item => item.id !== app.id); changed(); render();
@@ -249,6 +250,10 @@ function openApp(app) {
   const draft = app ? structuredClone(app) : { id: crypto.randomUUID(), name: '', url: '' };
   if (!configureDialog(app ? 'แก้ไขแอปปลายทาง' : 'เพิ่มแอปปลายทาง', 'ระบุแอปที่ต้องการรับข้อมูลจาก Gateway', 'apps', draft, 'app', app?.id)) return;
   $('edit-fields').append(field('ชื่อแอป', 'app-name', draft.name, { placeholder: 'เช่น ระบบลงทะเบียน' }), field('URL รับ Webhook', 'app-url', draft.url, { type: 'url', maxLength: 2048, placeholder: 'https://app.example.com/webhook' }), element('p', 'field-hint', 'ใช้ HTTPS และปลายทางที่คุณเชื่อถือ แอปนี้จะได้รับข้อมูล event พร้อมรหัสยืนยันตัวตนของ Gateway'));
+  if (app?.id === 'sso') {
+    $('app-url').readOnly = true;
+    $('edit-fields').append(element('p', 'field-hint', 'SSO รับข้อมูล LINE เดิมทั้งชุดพร้อมลายเซ็น URL ผูกกับ SSO_WEBHOOK_URL บนเซิร์ฟเวอร์ เพื่อป้องกันการส่ง MFA ไปผิดปลายทาง'));
+  }
   $('edit-dialog').showModal(); $('app-name').focus();
 }
 function openRule(rule, duplicate = false) {
@@ -260,12 +265,12 @@ function openRule(rule, duplicate = false) {
   row.append(field('ประเภท event', 'rule-type', draft.eventType, { list: 'event-types', maxLength: 64 }), appLabel);
   const conditions = element('div', 'condition-fields'); conditions.id = 'rule-conditions';
   const conditionRow = element('div', 'field-row');
-  conditionRow.append(field('ชื่อพารามิเตอร์', 'rule-key', draft.postback?.key || '', { required: false, maxLength: 128, placeholder: 'action' }), field('ค่าที่ต้องตรง', 'rule-value', draft.postback?.value || '', { required: false, maxLength: 1024, placeholder: 'mfa' }));
-  conditions.append(conditionRow, element('p', '', 'เช่น action=mfa · เว้นว่างทั้งสองช่องเพื่อรับ postback ทุกค่า'));
+  conditionRow.append(field('ชื่อพารามิเตอร์', 'rule-key', draft.postback?.key || '', { required: false, maxLength: 128, placeholder: 'action' }), field('ค่าที่ต้องตรง', 'rule-value', draft.postback?.value || '', { required: false, maxLength: 1024, placeholder: 'register' }));
+  conditions.append(conditionRow, element('p', '', 'เช่น action=register · เว้นว่างเพื่อรับ postback ทั่วไป ส่วน cusa_mfa สงวนให้ SSO'));
   conditions.hidden = draft.eventType !== 'postback';
   const toggle = element('label', 'switch'), checkbox = element('input'); checkbox.id = 'rule-enabled'; checkbox.type = 'checkbox'; checkbox.checked = draft.enabled;
   toggle.append(checkbox, document.createTextNode('เปิดใช้งานกฎนี้'));
-  $('edit-fields').append(field('ชื่อกฎ', 'rule-name', draft.name, { placeholder: 'เช่น ยืนยันตัวตน LINE MFA' }), row, conditions, toggle);
+  $('edit-fields').append(field('ชื่อกฎ', 'rule-name', draft.name, { placeholder: 'เช่น ลงทะเบียนงานคืนสู่เหย้า' }), row, conditions, toggle);
   $('rule-type').addEventListener('input', () => { conditions.hidden = $('rule-type').value !== 'postback'; });
   $('edit-dialog').showModal(); $('rule-name').focus();
 }
@@ -295,6 +300,7 @@ $('edit-form').addEventListener('submit', event => {
       const key = $('rule-key').value, value = $('rule-value').value;
       if (key || value) {
         if (!key || key.trim() !== key) return fieldInvalid('rule-key', 'ระบุชื่อพารามิเตอร์ โดยไม่มีช่องว่างหัวท้าย');
+        if (key === 'cusa_mfa') return fieldInvalid('rule-key', 'cusa_mfa เป็นเส้นทางที่ป้องกันไว้ให้ SSO แล้ว ใช้กฎนี้กับพารามิเตอร์ของแอปอื่น');
         if (!value || value.trim() !== value) return fieldInvalid('rule-value', 'ระบุค่าที่ต้องตรง โดยไม่มีช่องว่างหัวท้าย');
         draft.postback = { key, value };
       }
@@ -312,20 +318,21 @@ $('confirm-cancel').addEventListener('click', () => finishConfirm(false));
 $('confirm-accept').addEventListener('click', () => finishConfirm(true));
 $('confirm-dialog').addEventListener('cancel', event => { event.preventDefault(); finishConfirm(false); });
 
-const reasons = { disabled: 'ข้าม: กฎนี้ปิดอยู่', event_type: 'ประเภท event ไม่ตรง', condition: 'เงื่อนไข postback ไม่ตรง หรือมีพารามิเตอร์ชื่อเดียวกันซ้ำ', matched: 'ตรงเงื่อนไข เลือกกฎนี้' };
+const reasons = { disabled: 'ข้าม: กฎนี้ปิดอยู่', event_type: 'ประเภท event ไม่ตรง', condition: 'เงื่อนไข postback ไม่ตรง หรือมีพารามิเตอร์ชื่อเดียวกันซ้ำ', matched: 'ตรงเงื่อนไข เลือกกฎนี้', mfa: 'ผ่านรูปแบบ MFA ส่ง LINE envelope เดิมไป SSO', invalid_mfa: 'MFA ไม่ถูกต้อง หมดอายุ หรือมีพารามิเตอร์ซ้ำ: ไม่ส่งต่อไปแอปอื่น' };
 $('test-type').addEventListener('input', () => { $('test-data-label').hidden = $('test-type').value !== 'postback'; clearSimulation(); });
-$('test-data').addEventListener('input', clearSimulation);
+for (const id of ['test-data', 'test-source', 'test-user', 'test-age']) $(id).addEventListener('input', clearSimulation);
 for (const node of document.querySelectorAll('[data-sample]')) node.addEventListener('click', () => {
   $('test-type').value = node.dataset.sample === 'mfa' ? 'postback' : node.dataset.sample;
-  $('test-data').value = node.dataset.sample === 'mfa' ? 'action=mfa' : '';
+  $('test-data').value = node.dataset.sample === 'mfa' ? `cusa_mfa=11111111-1111-4111-8111-111111111111&choice=${'x'.repeat(43)}` : '';
+  $('test-source').value = 'user'; $('test-user').value = `U${'0'.repeat(32)}`; $('test-age').value = '0';
   $('test-data-label').hidden = $('test-type').value !== 'postback'; clearSimulation();
 });
 $('simulation-form').addEventListener('submit', event => {
   event.preventDefault(); if (!routing) return;
-  const result = window.RoutingPreview.previewRoute({ type: $('test-type').value, postback: { data: $('test-data').value } }, routing);
+  const result = window.RoutingPreview.previewRoute({ type: $('test-type').value, postback: { data: $('test-data').value }, source: { type: $('test-source').value, userId: $('test-user').value }, timestamp: Date.now() - Number($('test-age').value) * 1000 }, routing);
   $('test-placeholder').hidden = true; $('test-result').hidden = false;
-  const heading = element('div', 'result-heading'); heading.append(icon('check-circle'), document.createTextNode(result.rule ? 'พบกฎที่ตรงเงื่อนไข' : 'ใช้แอปสำรอง'));
-  $('test-result').replaceChildren(heading, element('h2', 'result-app', result.app.name), element('p', 'result-url', result.app.url), element('p', 'result-reason', result.rule ? `เลือกกฎ “${result.rule.name}” ซึ่งเป็นกฎแรกที่ตรง` : 'ไม่มีเงื่อนไขใดตรง จึงส่งต่อไปยังแอปสำรอง'), element('h3', 'trace-heading', 'ลำดับการตรวจสอบ'));
+  const heading = element('div', 'result-heading'); heading.append(icon('check-circle'), document.createTextNode(result.drop ? 'ปฏิเสธ MFA' : result.protected ? 'เส้นทาง MFA ที่ป้องกันไว้' : result.rule ? 'พบกฎที่ตรงเงื่อนไข' : 'ใช้แอปสำรอง'));
+  $('test-result').replaceChildren(heading, element('h2', 'result-app', result.drop ? 'ไม่ส่งต่อไปแอปใด' : result.app?.name), element('p', 'result-url', result.app?.url || ''), element('p', 'result-reason', result.protected ? 'ตรวจ MFA ก่อนกฎทั่วไปเสมอ โดยใช้ข้อมูลผู้ใช้และอายุ event ที่จำลองด้านซ้าย' : result.rule ? `เลือกกฎ “${result.rule.name}” ซึ่งเป็นกฎแรกที่ตรง` : 'ไม่มีเงื่อนไขใดตรง จึงส่งต่อไปยังแอปสำรอง'), element('h3', 'trace-heading', 'ลำดับการตรวจสอบ'));
   for (const step of result.steps) {
     const row = element('div', `trace-step${step.reason === 'matched' ? ' matched' : ''}`), copy = element('div', '', step.name);
     copy.append(element('small', '', reasons[step.reason])); row.append(icon(step.reason === 'matched' ? 'check-circle' : step.reason === 'disabled' ? 'pause' : 'corner'), copy); $('test-result').append(row);
