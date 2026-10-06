@@ -58,6 +58,7 @@ const viewCopy = {
   rules: ['กฎส่งต่อ', 'รับอะไร ส่งไปไหน', 'มีเส้นทางพื้นฐานให้แล้ว เพิ่มกฎเฉพาะเมื่ออยากแยกไปแอปอื่น', 'เพิ่มกฎส่งต่อ'],
   apps: ['แอปปลายทาง', 'แอปที่เชื่อมต่อ', 'จัดการปลายทางที่รับ Webhook และเพิ่มแอปใหม่ได้ที่นี่', 'เพิ่มแอปปลายทาง'],
   recent: ['เหตุการณ์ล่าสุด', 'ดูเหตุการณ์ แล้วเลือกเส้นทาง', 'เลือก event ที่รับเข้าคิวแล้ว เพื่อสร้างกฎส่งต่อหรือ Reject โดยไม่ต้องเดาพารามิเตอร์', ''],
+  queue: ['คิวงาน', 'เห็นคิว ตรวจงานคงค้าง', 'ติดตามลำดับงานที่รอส่ง งานที่กำลังดำเนินการ และงานที่ต้องตรวจใน DLQ', ''],
   test: ['ทดลองเส้นทาง', 'ลองก่อน แล้วค่อยส่งจริง', 'ตรวจเงื่อนไขและแอปปลายทางก่อนบันทึกการเปลี่ยนแปลง', '']
 };
 function status(message, error = false, action) {
@@ -108,6 +109,7 @@ function switchView(name) {
   $('page-description').textContent = description; $('primary-action-label').textContent = action;
   $('primary-action').hidden = !action;
   if (name === 'recent') void loadRecent();
+  queueView.setActive(name === 'queue');
   closeMenu(); $('main').focus({ preventScroll: true }); window.scrollTo({ top: 0, behavior: 'instant' });
 }
 function closeMenu() {
@@ -440,6 +442,7 @@ async function loadRecent() {
 $('recent-refresh').addEventListener('click', loadRecent);
 $('recent-search').addEventListener('input', renderRecent);
 $('recent-filter').addEventListener('change', renderRecent);
+const queueView = window.QueueMonitor.mount({ api, session: () => csrfToken, ui: { element, badge, icon } });
 
 const errors = {
   routing_conflict: 'มีผู้ดูแลคนอื่นเปลี่ยนข้อมูลแล้ว กรุณาโหลดข้อมูลล่าสุดก่อนบันทึก',
@@ -449,10 +452,13 @@ const errors = {
   sso_unavailable: 'ติดต่อระบบยืนยันตัวตนไม่ได้ กรุณาลองใหม่ภายหลัง',
   routing_unavailable: 'อ่านหรือบันทึกข้อมูลไม่ได้ กรุณาลองใหม่ภายหลัง',
   recent_events_unavailable: 'โหลดเหตุการณ์ล่าสุดไม่ได้ ตรวจว่าอัปเดตไฟล์เซิร์ฟเวอร์ครบและเชื่อมต่อ Redis ได้',
+  queue_monitor_unavailable: 'อ่านสถานะคิวไม่ได้ กรุณาตรวจการเชื่อมต่อ Redis แล้วลองใหม่',
+  invalid_queue_page: 'หน้าคิวไม่ถูกต้อง กรุณาเปิดเมนูคิวงานใหม่',
   csrf_required: 'เซสชันไม่ถูกต้อง กรุณาเข้าสู่ระบบอีกครั้ง',
   unauthorized: 'เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง'
 };
 function expireSession() {
+  queueView.reset();
   csrfToken = undefined; clearInterval(sessionTimer); $('logout').hidden = true;
   $('session-label').replaceChildren(icon('lock'), document.createTextNode(routing ? 'เซสชันหมดอายุ' : 'สำหรับผู้ดูแล'));
   $('session-label').classList.toggle('expiring', Boolean(routing));
@@ -483,6 +489,7 @@ function setSession(session) {
     $('session-label').replaceChildren(icon('shield'), document.createTextNode(`Admin · ${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`));
   };
   sessionTimer = setInterval(tick, 1000); tick();
+  if (routing && csrfToken) queueView.setActive(currentView === 'queue');
 }
 async function api(url, options = {}) {
   let response, body;
@@ -532,6 +539,7 @@ $('logout').addEventListener('click', async () => {
   setBusy(true);
   try {
     await api('/auth/sso/logout', { method: 'POST', headers: { 'x-csrf-token': csrfToken } });
+    queueView.reset();
     recentItems = []; recentRevision = undefined; $('recent-list').replaceChildren();
     csrfToken = undefined; routing = undefined; savedRouting = undefined; dirty = false; clearInterval(sessionTimer);
     setNavigation(false);

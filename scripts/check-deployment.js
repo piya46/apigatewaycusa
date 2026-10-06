@@ -100,7 +100,7 @@ async function checkDeployment({ origin, publicOnly = false, pingSecret, lineCha
     && /text\/html/i.test(response.headers.get('content-type') || '')
     && Boolean(response.headers.get('content-security-policy'))
     && text.includes('id="editor"') && text.includes('/admin/assets/admin.js'));
-  for (const [file, marker] of [['admin.css', ':root'], ['admin.js', 'RoutingPreview'], ['line-contract.js', 'validMfa'], ['routing-preview.js', 'previewRoute'], ['rule-builder.js', 'parseSample'], ['rule-editor.js', 'RuleEditor']]) {
+  for (const [file, marker] of [['admin.css', ':root'], ['admin.js', 'RoutingPreview'], ['line-contract.js', 'validMfa'], ['routing-preview.js', 'previewRoute'], ['rule-builder.js', 'parseSample'], ['rule-editor.js', 'RuleEditor'], ['queue-monitor.js', 'QueueMonitor']]) {
     await check(`Admin asset ${file}`, `/admin/assets/${file}`, {}, (response, text) => response.status === 200 && text.includes(marker)
       && (file.endsWith('.css') ? /text\/css/i : /javascript/i).test(response.headers.get('content-type') || ''));
   }
@@ -108,6 +108,7 @@ async function checkDeployment({ origin, publicOnly = false, pingSecret, lineCha
   await check('SSO session rejects anonymous access', '/auth/sso/session', {}, jsonStatus(401, 'error', 'unauthorized'));
   await check('Admin API rejects anonymous access', '/v1/admin/webhook-routing', {}, jsonStatus(401, 'error', 'unauthorized'));
   await check('Recent events API rejects anonymous access', '/v1/admin/recent-events', {}, jsonStatus(401, 'error', 'unauthorized'));
+  await check('Queue monitor API rejects anonymous access', '/v1/admin/queue', {}, jsonStatus(401, 'error', 'unauthorized'));
   await check('LINE rejects unsigned payload', '/webhooks/line', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: EMPTY_WEBHOOK
   }, jsonStatus(401, 'error', 'invalid_signature'));

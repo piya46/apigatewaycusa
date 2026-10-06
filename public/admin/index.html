@@ -11,6 +11,7 @@
   <script src="/admin/assets/routing-preview.js" defer></script>
   <script src="/admin/assets/rule-builder.js" defer></script>
   <script src="/admin/assets/rule-editor.js" defer></script>
+  <script src="/admin/assets/queue-monitor.js" defer></script>
   <script src="/admin/assets/admin.js" defer></script>
 </head>
 <body>
@@ -24,6 +25,7 @@
       <button type="button" class="nav-item" data-view="rules"><span data-icon="route"></span>กฎส่งต่อ<span class="nav-count" id="nav-rule-count">—</span></button>
       <button type="button" class="nav-item" data-view="apps"><span data-icon="apps"></span>แอปปลายทาง<span class="nav-count" id="nav-app-count">—</span></button>
       <button type="button" class="nav-item" data-view="recent"><span data-icon="bolt"></span>เหตุการณ์ล่าสุด</button>
+      <button type="button" class="nav-item" data-view="queue"><span data-icon="menu"></span>คิวงาน</button>
       <button type="button" class="nav-item" data-view="test"><span data-icon="flask"></span>ทดลองเส้นทาง</button>
     </nav>
     <div class="sidebar-bottom"><div class="sidebar-note"><span data-icon="shield"></span><strong>เชื่อมต่ออย่างมั่นใจ</strong><p>กำหนดทุกเส้นทางได้ในที่เดียว<br>เข้าถึงด้วยบัญชี CUSA SSO</p></div><button type="button" id="open-help" class="nav-item"><span data-icon="help"></span>คู่มือการใช้งาน<span data-icon="arrow-up-right"></span></button><div class="sidebar-footer"><span class="tiny-logo">SCICU</span><span>ALUMNI REUNION</span></div></div>
@@ -67,6 +69,14 @@
           <section class="panel fallback-card" id="fallback-card"><span class="stat-icon sand" data-icon="corner"></span><div><span class="eyebrow">เส้นทางพื้นฐาน · ตรวจเป็นอันดับสุดท้าย</span><h2>ข้อความและเหตุการณ์ที่เหลือ</h2><p class="muted">เลือกแอป หรือ Reject เพื่อรับแล้วไม่ส่งต่อและไม่เข้า DLQ เมื่อไม่ตรงกฎด้านบน มีผลกับงานที่รอในคิวด้วย (ไม่รวม MFA)</p></div><label><span class="sr-only">แอปสำรอง</span><select id="fallback" required></select></label></section>
         </section>
         <section id="view-apps" class="view" aria-label="แอปปลายทาง" hidden><div class="apps-toolbar"><div class="search-box"><span data-icon="search"></span><input type="search" id="app-search" placeholder="ค้นหาชื่อแอปหรือ URL…" aria-label="ค้นหาแอป"></div><span class="muted small" id="apps-result-count"></span></div><div id="apps" class="apps-grid"></div><p class="section-footnote"><span data-icon="lock"></span>เพิ่มเฉพาะแอปที่เชื่อถือได้ ปลายทางจะได้รับข้อมูล event และรหัสยืนยันตัวตนของ Gateway</p></section>
+        <section id="view-queue" class="view" aria-label="คิวงาน" hidden>
+          <div class="panel queue-intro"><div><span class="eyebrow">QUEUE MONITOR</span><h2>ตรวจงานที่ยังคงค้าง</h2><p class="muted">อ่านสถานะคิวจริงครั้งละ 25 งาน โดยไม่หยิบ ลบ หรือส่งงานซ้ำ</p><p class="muted small" id="queue-updated">ยังไม่ได้โหลดข้อมูล</p></div><div class="queue-refresh-controls"><button type="button" class="button secondary" id="queue-refresh"><span data-icon="refresh"></span>รีเฟรชคิว</button><label class="queue-auto"><input type="checkbox" id="queue-auto">อัปเดตทุก 15 วินาที</label></div></div>
+          <div class="queue-counters" aria-label="เลือกสถานะคิว"><button type="button" class="panel queue-counter" data-queue-state="waiting" aria-pressed="true"><span class="stat-icon sand" data-icon="pause"></span><span>รอส่ง</span><strong id="queue-count-waiting">—</strong><small>เรียงตามคิว FIFO</small></button><button type="button" class="panel queue-counter" data-queue-state="processing" aria-pressed="false"><span class="stat-icon lavender" data-icon="refresh"></span><span>กำลังดำเนินการ</span><strong id="queue-count-processing">—</strong><small>Worker หยิบไปแล้ว</small></button><button type="button" class="panel queue-counter" data-queue-state="dlq" aria-pressed="false"><span class="stat-icon peach" data-icon="info"></span><span>รอตรวจใน DLQ</span><strong id="queue-count-dlq">—</strong><small>ไม่ส่งซ้ำอัตโนมัติ</small></button></div>
+          <div class="queue-summary"><span id="queue-capacity">—</span><span id="queue-oldest">—</span></div>
+          <p class="notice error" id="queue-error" role="status" hidden></p><p class="builder-warning" id="queue-warning" role="status" hidden></p>
+          <section class="panel queue-panel"><div class="panel-heading"><div><h2 id="queue-list-title">งานที่รอส่ง</h2><p class="muted small" id="queue-order-note">อันดับ 1 คืองานที่ Worker จะหยิบถัดไป</p></div></div><div id="queue-list" aria-live="polite" aria-busy="false"></div><div class="queue-pagination"><span id="queue-page" class="muted small">—</span><div><button type="button" class="button secondary" id="queue-first">หน้าแรก</button><button type="button" class="button secondary" id="queue-prev">ก่อนหน้า</button><button type="button" class="button secondary" id="queue-next">ถัดไป</button></div></div></section>
+          <p class="section-footnote queue-footnote">ตัวเลขนับเป็นงาน: หนึ่งงาน SSO อาจมีหลาย event อายุงานนับจากรับครั้งแรก รวมเวลาก่อนนำงานกลับจาก DLQ ลำดับแต่ละหน้าเป็นสถานะขณะอ่านและอาจเลื่อนเมื่อ Worker ทำงาน งานที่หายจากรายการอาจสำเร็จ ถูก Reject ถูกทิ้งเพราะซ้ำ หรือย้ายไป DLQ จึงยังไม่ใช่ประวัติยืนยันการส่งสำเร็จ</p>
+        </section>
         <section id="view-recent" class="view" aria-label="เหตุการณ์ล่าสุด" hidden>
           <div class="panel recent-intro"><div><h2>ใช้ event จริงเป็นตัวอย่างตั้งกฎ</h2><p>แสดงสูงสุด 200 รายการใน 24 ชั่วโมง เฉพาะที่รับหลังอัปเดตรุ่นนี้ ไม่แสดงข้อความ ข้อมูลผู้ใช้ หรือข้อมูล MFA</p><p>ผลเส้นทางประเมินจากกฎที่บันทึกไว้ตอนโหลดหน้านี้ ไม่ใช่ประวัติยืนยันการส่งสำเร็จ</p></div><button type="button" class="button secondary" id="recent-refresh"><span data-icon="refresh"></span>โหลดเหตุการณ์ล่าสุด</button></div>
           <div id="recent-draft-note" class="draft-banner" hidden>ผลที่เห็นอ้างอิงกฎที่บันทึกแล้ว ยังไม่รวมฉบับแก้ไขในหน้านี้</div>

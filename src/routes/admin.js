@@ -3,7 +3,7 @@
 const express = require('express');
 const { RoutingValidationError, RoutingConflictError } = require('../routing-store');
 
-function createAdminRouter({ routingStore, recentEvents, logger }) {
+function createAdminRouter({ routingStore, recentEvents, queueMonitor, logger }) {
   const router = express.Router();
   // Only explicitly granted administrators may redirect webhook payloads and
   // the internal API credential. A generic authenticated user is insufficient.
@@ -30,6 +30,21 @@ function createAdminRouter({ routingStore, recentEvents, logger }) {
     } catch {
       logger.warn('recent_events_unavailable');
       return res.status(503).json({ error: 'recent_events_unavailable' });
+    }
+  });
+  router.get('/queue', async (req, res) => {
+    const { state = 'waiting', offset = '0' } = req.query;
+    if (!['waiting', 'processing', 'dlq'].includes(state) || typeof offset !== 'string'
+      || !/^(0|[1-9][0-9]{0,9})$/.test(offset) || Number(offset) > 1000000000
+      || Object.keys(req.query).some(key => !['state', 'offset'].includes(key))) {
+      return res.status(400).json({ error: 'invalid_queue_page' });
+    }
+    try {
+      if (!queueMonitor) throw new Error();
+      return res.json(await queueMonitor.snapshot({ state, offset: Number(offset) }));
+    } catch {
+      logger.warn('queue_monitor_unavailable');
+      return res.status(503).json({ error: 'queue_monitor_unavailable' });
     }
   });
   router.put('/webhook-routing', async (req, res) => {

@@ -12,7 +12,7 @@ const CODES = new Set([
   'webhook_queued', 'queue_unavailable', 'request_error', 'worker_error',
   'event_forwarded', 'event_duplicate', 'event_dead_lettered', 'event_dropped', 'claim_recovered',
   'shutdown_started', 'shutdown_complete', 'shutdown_timeout', 'shutdown_error',
-  'fatal_error', 'dlq_replayed', 'routing_updated', 'routing_unavailable', 'recent_events_unavailable'
+  'fatal_error', 'dlq_replayed', 'routing_updated', 'routing_unavailable', 'recent_events_unavailable', 'queue_monitor_unavailable'
 ]);
 function sanitizeMetadata(metadata = {}) {
   const safe = {};

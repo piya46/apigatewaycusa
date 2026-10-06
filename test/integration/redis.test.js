@@ -13,6 +13,7 @@ const request = require('supertest');
 const { createRedis, closeRedis } = require('../../src/redis');
 const { createQueue, KEYS } = require('../../src/queue');
 const { createRecentEvents, RECENT } = require('../../src/recent-events');
+const { createQueueMonitor } = require('../../src/queue-monitor');
 const { createApp } = require('../../src/app');
 const { Worker } = require('../../src/worker');
 const { parseJob } = require('../../src/payload');
@@ -102,6 +103,7 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
   const queue = createQueue(redis, config);
   const routingStore = createRoutingStore(redis, config);
   const recentEvents = createRecentEvents(redis, config);
+  const queueMonitor = createQueueMonitor(redis, config);
   // This fixture always starts a new private Redis; never targets REDIS_URL.
   const reset = () => redis.flushdb();
 
@@ -142,6 +144,60 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
     assert.equal(await redis.zcard(RECENT.index), 1, 'rejected events must not appear in recent history');
     await small.ack(job);
     assert.equal(await small.enqueue(payload(event('b'), event('c'))), 2);
+  });
+
+  await t.test('queue snapshots paginate in actual claim order and never mutate queue, leases or DLQ', async () => {
+    await reset();
+    await queue.enqueue(payload(...Array.from({ length: 60 }, (_, index) => event(`private-${index}`))));
+    const ids = (await redis.lrange(KEYS.main, 0, -1)).reverse().map(raw => JSON.parse(raw).id);
+    const state = async () => ({ main: await redis.lrange(KEYS.main, 0, -1), processing: await redis.hgetall(KEYS.processing),
+      leases: await redis.zrange(KEYS.leases, 0, -1, 'WITHSCORES'), dlq: await redis.lrange(KEYS.dlq, 0, -1) });
+    const before = await state();
+    const first = await queueMonitor.snapshot();
+    assert.deepEqual(first.counts, { waiting: 60, processing: 0, dlq: 0, expiredLeases: 0 });
+    assert.deepEqual(first.items.map(item => item.id), ids.slice(0, 25));
+    assert.equal(first.items[0].position, 1); assert.equal(first.hasMore, true);
+    const second = await queueMonitor.snapshot({ offset: 25 });
+    assert.deepEqual(second.items.map(item => item.id), ids.slice(25, 50));
+    assert.equal(second.items[0].position, 26);
+    const last = await queueMonitor.snapshot({ offset: 50 });
+    assert.deepEqual(last.items.map(item => item.id), ids.slice(50));
+    assert.equal(last.hasMore, false);
+    assert.equal((await queueMonitor.snapshot({ offset: 100 })).offset, 0);
+    assert.deepEqual(await state(), before);
+    assert.doesNotMatch(JSON.stringify(first), /private|source|replyToken|payload/);
+    const claimed = (await queue.claim()).job;
+    assert.equal(JSON.parse(claimed.raw).id, first.items[0].id);
+    const processing = await queueMonitor.snapshot({ state: 'processing' });
+    assert.equal(processing.counts.waiting, 59); assert.equal(processing.counts.processing, 1);
+    assert.equal(processing.items[0].id, ids[0]); assert.equal(processing.items[0].leaseExpired, false);
+    await redis.zadd(KEYS.leases, 0, claimed.receipt);
+    const expiredBefore = await state();
+    const expired = await queueMonitor.snapshot({ state: 'processing' });
+    assert.equal(expired.counts.expiredLeases, 1); assert.equal(expired.items[0].leaseExpired, true);
+    assert.deepEqual(await state(), expiredBefore, 'monitor must not recover expired leases');
+    await queue.fail(claimed, { kind: 'http_error', status: 500, message: 'private-error' }, 'private-target');
+    const failedBefore = await state();
+    const failed = await queueMonitor.snapshot({ state: 'dlq' });
+    assert.equal(failed.items[0].id, ids[0]); assert.deepEqual(failed.items[0].error, { kind: 'http_error', status: 500 });
+    assert.equal(failed.counts.dlq, 1); assert.equal(failed.counts.processing, 0);
+    assert.doesNotMatch(JSON.stringify(failed), /private|rawJob/);
+    assert.deepEqual(await state(), failedBefore);
+  });
+
+  await t.test('empty, malformed and inconsistent queue records remain visible safely', async () => {
+    await reset();
+    const empty = await queueMonitor.snapshot();
+    assert.deepEqual(empty.items, []); assert.equal(empty.oldestReceivedAt, null);
+    await redis.lpush(KEYS.main, 'private-invalid');
+    const invalid = await queueMonitor.snapshot();
+    assert.equal(invalid.items[0].kind, 'invalid'); assert.equal(invalid.oldestReceivedAt, null);
+    await redis.zadd(KEYS.leases, 0, 'private-orphan-receipt');
+    const inconsistent = await queueMonitor.snapshot({ state: 'processing' });
+    assert.equal(inconsistent.inconsistent, true); assert.equal(inconsistent.items[0].kind, 'invalid');
+    assert.doesNotMatch(JSON.stringify(inconsistent), /private/);
+    await redis.del(KEYS.main); await redis.set(KEYS.main, 'wrong-type');
+    await assert.rejects(queueMonitor.snapshot());
   });
 
   await t.test('only authenticated, accepted events enter redacted history; empty verification has no sample', async () => {
@@ -402,9 +458,10 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
       async revoke(token) { assert.equal(token, accessToken); revoked = true; return { ok: true }; }
     };
     const sso = createSsoService(redis, ssoConfig, client);
-    const app = createApp({ config: { ...config, sso: ssoConfig }, queue, routingStore, recentEvents, sso, logger });
+    const app = createApp({ config: { ...config, sso: ssoConfig }, queue, routingStore, recentEvents, queueMonitor, sso, logger });
     assert.equal((await request(app).get('/v1/admin/webhook-routing')).status, 401);
     assert.equal((await request(app).get('/v1/admin/recent-events')).status, 401);
+    assert.equal((await request(app).get('/v1/admin/queue')).status, 401);
     const start = await request(app).get('/auth/sso/login');
     assert.equal(start.status, 303);
     const authorize = new URL(start.headers.location);
@@ -436,6 +493,17 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
     assert.equal(recent.body.items.length, 1);
     assert.equal(recent.body.routingRevision, loaded.body.revision);
     assert.doesNotMatch(JSON.stringify(recent.body), /private message|fingerprint|access_token/);
+    const monitored = await request(app).get('/v1/admin/queue').set('Cookie', sessionCookie);
+    assert.equal(monitored.status, 200); assert.match(monitored.headers['cache-control'], /no-store/);
+    assert.equal(monitored.body.counts.waiting, 1); assert.equal(monitored.body.items[0].position, 1);
+    assert.doesNotMatch(JSON.stringify(monitored.body), /private message|fingerprint|access_token/);
+    const unavailableApp = createApp({ config: { ...config, sso: ssoConfig }, queue, routingStore, sso, logger,
+      queueMonitor: { async snapshot() { throw new Error('private-redis-password'); } } });
+    const unavailable = await request(unavailableApp).get('/v1/admin/queue').set('Cookie', sessionCookie);
+    assert.equal(unavailable.status, 503); assert.deepEqual(unavailable.body, { error: 'queue_monitor_unavailable' });
+    for (const query of ['state=all', 'offset=-1', 'offset=1.5', 'offset=1000000001', 'offset=0&offset=25', 'limit=100000']) {
+      assert.equal((await request(app).get('/v1/admin/queue?' + query).set('Cookie', sessionCookie)).status, 400);
+    }
     const edit = loaded.body; edit.apps.push({ id: 'added', name: 'Added app', url: 'https://added.example.test/webhook' });
     for (const headers of [{}, { Origin: 'https://evil.example.test', 'X-CSRF-Token': csrf }, { Origin: 'https://gateway.example.test', 'X-CSRF-Token': 'wrong' }]) {
       assert.equal((await request(app).put('/v1/admin/webhook-routing').set('Cookie', sessionCookie).set(headers).send(edit)).status, 403);
@@ -450,6 +518,8 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
     roles = ['viewer'];
     assert.equal((await request(app).get('/v1/admin/webhook-routing').set('Cookie', sessionCookie)).status, 403);
     assert.equal((await request(app).get('/v1/admin/recent-events').set('Cookie', sessionCookie)).status, 403);
+    assert.equal((await request(app).get('/v1/admin/queue')).status, 401);
+    assert.equal((await request(app).get('/v1/admin/queue').set('Cookie', sessionCookie)).status, 403);
     assert.equal((await request(app).put('/v1/admin/webhook-routing').set(headers).send(saved.body)).status, 403);
     // Logout clears local session independently of current upstream role.
     assert.equal((await request(app).post('/auth/sso/logout').set(headers)).status, 200);
