@@ -7,6 +7,7 @@ const { createQueue } = require('./src/queue');
 const { createRoutingStore } = require('./src/routing-store');
 const { createSsoService } = require('./src/sso');
 const { createForwarder } = require('./src/forward');
+const { createRecentEvents } = require('./src/recent-events');
 const { Worker } = require('./src/worker');
 const { createApp } = require('./src/app');
 const { createShutdown } = require('./src/shutdown');
@@ -31,7 +32,8 @@ function main() {
   const sso = createSsoService(redis, config.sso);
   const forward = createForwarder(config);
   const worker = new Worker({ queue, routingStore, forward, config, logger });
-  const app = createApp({ config, queue, routingStore, sso, logger });
+  const recentEvents = createRecentEvents(redis, config);
+  const app = createApp({ config, queue, routingStore, recentEvents, sso, logger });
 
   // Passenger intercepts the first http.Server.listen() call (reverse binding).
   const server = app.listen(config.port, config.host, () => {

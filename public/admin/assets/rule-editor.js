@@ -48,8 +48,11 @@ window.RuleEditor = {
 
     const destination = section('2', 'ส่งไปแอปไหน?', 'เลือกแอปที่รับเหตุการณ์นี้ หรือเพิ่มแอปใหม่ได้ในขั้นตอนเดียว');
     const appChoices = routing.apps.filter(app => app.id !== 'sso').map(app => [app.id, app.name]);
+    appChoices.push(['!reject', 'Reject · รับแล้วไม่ส่งต่อไปแอปใด']);
     if (routing.apps.length < 30) appChoices.push(['!new', '+ เพิ่มแอปปลายทางใหม่…']);
-    destination.append(selectField('ส่งไปยังแอป', 'rule-app', appChoices, draft.appId));
+    destination.append(selectField('ส่งไปยังแอป', 'rule-app', appChoices, draft.action === 'reject' ? '!reject' : draft.appId));
+    const rejectNote = element('p', 'builder-warning', 'Reject จะรับ event แล้วทิ้ง โดยไม่ส่งต่อและไม่เข้า DLQ มีผลกับงานที่ worker หยิบหลังบันทึก รวมงานที่รอในคิว ไม่สามารถ Reject เส้นทาง MFA ที่ระบบป้องกันไว้');
+    rejectNote.id = 'rule-reject-note'; rejectNote.hidden = true; destination.append(rejectNote);
     const newApp = element('div', 'new-app-fields'); newApp.id = 'rule-new-app';
     newApp.append(field('ชื่อแอปใหม่', 'rule-new-name', '', { required: false }),
       field('URL รับ Webhook ของแอปใหม่', 'rule-new-url', '', { required: false, type: 'url', maxLength: 2048, placeholder: 'https://your-app.example/webhook' }),
@@ -74,11 +77,14 @@ window.RuleEditor = {
       const value = { ...draft, name: $('rule-name').value.trim(), eventType: eventType(), enabled: $('rule-enabled').checked,
         appId: $('rule-app').value === '!new' ? newAppId : $('rule-app').value };
       delete value.postback;
+      delete value.action;
+      if ($('rule-app').value === '!reject') { value.action = 'reject'; delete value.appId; }
       if (value.eventType === 'postback' && $('rule-match').value === 'parameter') value.postback = { key: $('rule-key').value, value: $('rule-value').value };
       return value;
     }
     function refresh() {
       const isPostback = eventType() === 'postback', isNew = $('rule-app').value === '!new';
+      rejectNote.hidden = $('rule-app').value !== '!reject';
       custom.hidden = $('rule-type').value !== '!custom'; $('rule-custom-type').disabled = custom.hidden; $('rule-custom-type').required = !custom.hidden;
       conditions.hidden = !isPostback;
       specific.hidden = !isPostback || $('rule-match').value === 'all';
@@ -88,7 +94,7 @@ window.RuleEditor = {
       }
       newApp.hidden = !isNew;
       for (const id of ['rule-new-name', 'rule-new-url']) { $(id).disabled = !isNew; $(id).required = isNew; if (!isNew) $(id).setCustomValidity(''); }
-      const value = readDraft(), appName = isNew ? $('rule-new-name').value.trim() || 'แอปใหม่' : routing.apps.find(app => app.id === value.appId)?.name || 'เลือกแอป';
+      const value = readDraft(), appName = value.action === 'reject' ? 'Reject (ไม่ส่งต่อ)' : isNew ? $('rule-new-name').value.trim() || 'แอปใหม่' : routing.apps.find(app => app.id === value.appId)?.name || 'เลือกแอป';
       manualTitle.textContent = value.postback?.key && value.postback.value
         ? `ใช้ ${value.postback.key}=${value.postback.value} · แตะเพื่อแก้ไข` : 'กรอกชื่อพารามิเตอร์และค่าเอง';
       if (automaticName) $('rule-name').value = `${builder.conditionLabel(value)} → ${appName}`.slice(0, 100);

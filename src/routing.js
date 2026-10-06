@@ -16,9 +16,11 @@ function routeEvent(event, routing) {
       const values = new URLSearchParams(event.postback.data).getAll(rule.postback.key);
       if (values.length !== 1 || values[0] !== rule.postback.value) continue;
     }
+    if (rule.action === 'reject') return { drop: 'policy_reject' };
     appId = rule.appId;
     break;
   }
+  if (appId === null) return { drop: 'policy_reject' };
   const app = routing.apps.find(item => item.id === appId);
   if (!app) throw new Error('Routing target unavailable');
   if (app.id === 'sso') throw new Error('Generic events cannot target SSO');

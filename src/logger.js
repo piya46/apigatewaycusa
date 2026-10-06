@@ -12,7 +12,7 @@ const CODES = new Set([
   'webhook_queued', 'queue_unavailable', 'request_error', 'worker_error',
   'event_forwarded', 'event_duplicate', 'event_dead_lettered', 'event_dropped', 'claim_recovered',
   'shutdown_started', 'shutdown_complete', 'shutdown_timeout', 'shutdown_error',
-  'fatal_error', 'dlq_replayed', 'routing_updated', 'routing_unavailable'
+  'fatal_error', 'dlq_replayed', 'routing_updated', 'routing_unavailable', 'recent_events_unavailable'
 ]);
 function sanitizeMetadata(metadata = {}) {
   const safe = {};
@@ -20,7 +20,7 @@ function sanitizeMetadata(metadata = {}) {
     if (Number.isFinite(metadata[key])) safe[key] = metadata[key];
   }
   if (['sso', 'chatbot'].includes(metadata.target)) safe.target = metadata.target;
-  if (['timeout', 'http_error', 'network_error', 'invalid_job', 'interrupted', 'invalid_mfa', 'missing_original', 'partial_duplicate', 'delivery_contract'].includes(metadata.reason)) safe.reason = metadata.reason;
+  if (['timeout', 'http_error', 'network_error', 'invalid_job', 'interrupted', 'invalid_mfa', 'missing_original', 'partial_duplicate', 'delivery_contract', 'policy_reject'].includes(metadata.reason)) safe.reason = metadata.reason;
   return safe;
 }
 

@@ -72,12 +72,14 @@ Receiver ต้องตรวจ Bearer token แบบเวลาคงที
 
 - Gateway ตอบ LINE 200 หลัง Redis บันทึกสำเร็จ โดยไม่รอปลายทาง; คิวเต็ม/Redis ล้มเหลวตอบ 503 และต้องเปิด LINE redelivery
 - Worker ใช้ lease และ `SET NX EX 3600` ก่อนส่ง โดย reserve ID ของ MFA ทั้ง batch แบบ atomic; งานแอปทั่วไปใช้ ID ของ event เดียว
+- กฎทั่วไปและ fallback เลือก Reject ได้: Gateway ยังตอบ 200 หลังเข้าคิว แล้ว worker reserve ID และ ack โดยไม่ส่ง HTTP/ไม่เข้า DLQ (`event_dropped`, reason `policy_reject`) ไม่กระทบการแยก MFA ที่ป้องกันไว้และไม่แก้ raw signed batch ที่ SSO ได้รับ ไม่สามารถนำตัวอย่างในหน้าเหตุการณ์ล่าสุดมาส่งซ้ำได้
 - เมื่อ ID ทุกตัวซ้ำจะทิ้งงาน หาก raw MFA batch มีทั้ง ID ซ้ำและใหม่ จะเข้า DLQ ด้วย `partial_duplicate` โดยไม่ reserve ID ใหม่และไม่ส่ง batch นั้น เนื่องจากการตัดรายการซ้ำจะทำให้ LINE signature เสีย ให้ตรวจเหตุและขอ MFA ใหม่ภายใน flow ของ SSO
 - HTTP 2xx = delivered; redirect/4xx/5xx/timeout/network error = DLQ ไม่มี auto retry ปลายทาง ค่า timeout เริ่มต้น 4 วินาที ไม่มี cookie/Authorization/forwarded headers จากผู้ใช้ใน request ที่ส่งต่อ
 - ความล้มเหลวแบบ timeout อาจเกิดหลังปลายทางทำงานแล้ว จึงไม่รับประกัน exactly-once: SSO ต้องบังคับ one-time challenge และแอปทั่วไปต้องทำ idempotency เองด้วย
 - DLQ replay ปลด marker เฉพาะ ID ที่เป็นของงานนั้น หากมีเจ้าของใหม่จะไม่แตะงานหรือ marker MFA ที่เกิน 3 นาทีจะไม่ทำต่อแม้ replay; งานเก่าที่ไม่มี raw signature เก็บเป็น `missing_original` ไม่เซ็นทดแทน
 - LINE verification `events: []` เข้าคิว raw SSO เช่นกัน ไม่มี MFA/message จริง และไม่ใช้ event idempotency marker การได้ 200 จาก Gateway ยังไม่รับประกันว่า SSO ตอบสำเร็จ ให้ตรวจ worker log `event_forwarded` target `sso` และ DLQ เพิ่ม
 - Logs มีเฉพาะรหัสและ metadata ที่อนุญาต ไม่มี body, LINE ID, choice, signature หรือ token; queue/DLQ มีข้อมูลส่วนตัว จึงต้องจำกัดสิทธิ์ Redis และกำหนดระยะเก็บข้อมูลตามนโยบายของโครงการ
+- หน้าเหตุการณ์ล่าสุดใช้ข้อมูลสรุปแยกจาก payload สูงสุด 200 รายการ / 24 ชั่วโมง ไม่มีข้อความ/source/replyToken/MFA parameter เก็บเฉพาะคำสั่งที่อนุญาตและ HMAC ภายในสำหรับเทียบเงื่อนไข ดูรายละเอียดใน README; ผล route เป็นการประเมินจาก configuration ปัจจุบัน ไม่ใช่ delivery receipt
 
 โค้ดหลัก: `src/routes/webhooks.js`, `src/queue.js`, `src/worker.js`, `src/forward.js`; ตัวตรวจ MFA ร่วมกับ simulator: `public/admin/assets/line-contract.js` ขั้นตอน migration/rollback: [PLESK.md](PLESK.md#อัปเกรดเป็นสัญญา-webhook-v1-ที่รองรับ-sso-เดิม)
 

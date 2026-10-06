@@ -3,6 +3,7 @@
 const { randomUUID } = require('node:crypto');
 const { mfaEventIds, eventIds } = require('./payload');
 const { isMfa } = require('../public/admin/assets/line-contract');
+const { RECENT, summarizeEvent } = require('./recent-events');
 
 const KEYS = Object.freeze({
   main: 'webhook:queue:events',
@@ -14,11 +15,26 @@ const KEYS = Object.freeze({
 
 // Each script is atomic. Accepted jobs are never held only in process memory.
 const ENQUEUE = `
-  local count = #ARGV - 1
+  local count = tonumber(ARGV[2])
+  -- Lua errors do not roll back writes. Validate the history index before accepting jobs.
+  local historyType = redis.call('TYPE', KEYS[3]).ok
+  if historyType ~= 'none' and historyType ~= 'zset' then return 0 end
   if redis.call('LLEN', KEYS[1]) + redis.call('HLEN', KEYS[2]) + count > tonumber(ARGV[1]) then
     return 0
   end
-  for i = 2, #ARGV do redis.call('LPUSH', KEYS[1], ARGV[i]) end
+  for i = 3, count + 2 do redis.call('LPUSH', KEYS[1], ARGV[i]) end
+  -- Samples are already redacted; each has its own expiry, never extended by traffic.
+  for i = count + 6, #ARGV do
+    local sample = cjson.decode(ARGV[i])
+    redis.call('SET', ARGV[count + 3] .. sample.id, ARGV[i], 'EX', ARGV[count + 4])
+    redis.call('ZADD', KEYS[3], sample.receivedAt, sample.id)
+  end
+  local stale = redis.call('ZRANGE', KEYS[3], 0, -tonumber(ARGV[count + 5]) - 1)
+  for _, id in ipairs(stale) do
+    redis.call('DEL', ARGV[count + 3] .. id)
+    redis.call('ZREM', KEYS[3], id)
+  end
+  redis.call('EXPIRE', KEYS[3], ARGV[count + 4])
   return count
 `;
 
@@ -125,7 +141,9 @@ function createQueue(redis, config) {
         payload: { destination: payload.destination, events: [event] }
         }));
       }
-      const count = await redis.eval(ENQUEUE, 2, KEYS.main, KEYS.processing, config.queueMaxLength, ...jobs);
+      const samples = payload.events.map(event => JSON.stringify(summarizeEvent(event, config.lineChannelSecret, receivedAt)));
+      const count = await redis.eval(ENQUEUE, 3, KEYS.main, KEYS.processing, RECENT.index,
+        config.queueMaxLength, jobs.length, ...jobs, RECENT.prefix, RECENT.ttl, RECENT.limit, ...samples);
       if (count !== jobs.length) throw new Error('Queue unavailable');
       return count;
     },

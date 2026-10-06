@@ -3,7 +3,7 @@
 const express = require('express');
 const { RoutingValidationError, RoutingConflictError } = require('../routing-store');
 
-function createAdminRouter({ routingStore, logger }) {
+function createAdminRouter({ routingStore, recentEvents, logger }) {
   const router = express.Router();
   // Only explicitly granted administrators may redirect webhook payloads and
   // the internal API credential. A generic authenticated user is insufficient.
@@ -20,6 +20,16 @@ function createAdminRouter({ routingStore, logger }) {
     } catch {
       logger.warn('routing_unavailable');
       return res.status(503).json({ error: 'routing_unavailable' });
+    }
+  });
+  router.get('/recent-events', async (req, res) => {
+    try {
+      if (!recentEvents) throw new Error();
+      const routing = await routingStore.get();
+      return res.json({ items: await recentEvents.list(routing), routingRevision: routing.revision, retentionHours: 24, limit: 200 });
+    } catch {
+      logger.warn('recent_events_unavailable');
+      return res.status(503).json({ error: 'recent_events_unavailable' });
     }
   });
   router.put('/webhook-routing', async (req, res) => {

@@ -54,6 +54,18 @@ test('drops duplicate IDs without forwarding', async () => {
   assert.deepEqual(calls, ['reserve', 'ack']);
 });
 
+test('Reject reserves idempotency and acknowledges without forwarding or putting the event in DLQ', async () => {
+  for (const fallback of [true, false]) {
+    const { worker, calls } = setup();
+    const routing = defaultRouting(config);
+    if (fallback) routing.fallbackAppId = null;
+    else routing.rules.push({ id: 'reject', name: 'Reject messages', enabled: true, eventType: 'message', action: 'reject' });
+    worker.routingStore = { async get() { return routing; } };
+    await worker.tick();
+    assert.deepEqual(calls, ['reserve', 'ack']);
+  }
+});
+
 test('expired claims cannot be forwarded', async () => {
   const { worker, calls } = setup({ reservation: 'expired' });
   await worker.tick();

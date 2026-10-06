@@ -107,6 +107,7 @@ async function checkDeployment({ origin, publicOnly = false, pingSecret, lineCha
   await check('Ping rejects missing secret', '/ping', {}, jsonStatus(401, 'error', 'unauthorized'));
   await check('SSO session rejects anonymous access', '/auth/sso/session', {}, jsonStatus(401, 'error', 'unauthorized'));
   await check('Admin API rejects anonymous access', '/v1/admin/webhook-routing', {}, jsonStatus(401, 'error', 'unauthorized'));
+  await check('Recent events API rejects anonymous access', '/v1/admin/recent-events', {}, jsonStatus(401, 'error', 'unauthorized'));
   await check('LINE rejects unsigned payload', '/webhooks/line', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: EMPTY_WEBHOOK
   }, jsonStatus(401, 'error', 'invalid_signature'));

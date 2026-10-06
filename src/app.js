@@ -8,7 +8,7 @@ const { createWebhooksRouter } = require('./routes/webhooks');
 const { createV1Router } = require('./routes/v1');
 const { createAuthRouter } = require('./routes/auth');
 
-function createApp({ config, queue, routingStore, sso, logger }) {
+function createApp({ config, queue, routingStore, recentEvents, sso, logger }) {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy);
@@ -29,7 +29,7 @@ function createApp({ config, queue, routingStore, sso, logger }) {
   app.get('/admin/routes', (req, res) => res.sendFile(path.join(__dirname, '../public/admin/index.html')));
   app.use('/admin/assets', express.static(path.join(__dirname, '../public/admin/assets'), { index: false, dotfiles: 'deny', redirect: false }));
   app.use('/auth/sso', createAuthRouter({ config, sso }));
-  app.use('/v1', createV1Router(config, { routingStore, sso, logger }));
+  app.use('/v1', createV1Router(config, { routingStore, recentEvents, sso, logger }));
   app.use((req, res) => res.status(404).json({ error: 'not_found' }));
   app.use((error, req, res, next) => {
     if (res.headersSent) return res.destroy();

@@ -39,14 +39,16 @@ function validateRouting(input) {
     appIds.add(app.id);
     return { id: app.id, name: app.name, url: url.href };
   });
-  if (!appIds.has(input.fallbackAppId)) invalid('The fallback app must exist');
+  if (input.fallbackAppId !== null && !appIds.has(input.fallbackAppId)) invalid('The fallback app must exist or be null for Reject');
   if (!appIds.has('sso') || input.fallbackAppId === 'sso') invalid('CUSA SSO must exist and cannot be a fallback');
   const ruleIds = new Set();
   const rules = input.rules.map(rule => {
     if (!object(rule) || typeof rule.id !== 'string' || !ID.test(rule.id) || ruleIds.has(rule.id)) invalid('Rule IDs must be unique');
     if (!text(rule.name, 100) || typeof rule.enabled !== 'boolean') invalid('Each rule needs a name and enabled flag');
     if (!text(rule.eventType, 64) || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(rule.eventType)) invalid('Invalid event type');
-    if (!appIds.has(rule.appId)) invalid('Every rule must reference an existing app');
+    if (rule.action !== undefined && !['forward', 'reject'].includes(rule.action)) invalid('Invalid rule action');
+    const reject = rule.action === 'reject';
+    if (reject ? rule.appId !== undefined : !appIds.has(rule.appId)) invalid('Forward rules need an app; Reject rules must not include appId');
     if (rule.appId === 'sso') invalid('CUSA SSO accepts only protected cusa_mfa events; remove the generic SSO rule');
     let postback;
     if (rule.postback !== undefined) {
@@ -58,7 +60,8 @@ function validateRouting(input) {
       if (postback.key === 'cusa_mfa') invalid('cusa_mfa is reserved for the protected CUSA SSO route');
     }
     ruleIds.add(rule.id);
-    return { id: rule.id, name: rule.name, enabled: rule.enabled, eventType: rule.eventType, ...(postback ? { postback } : {}), appId: rule.appId };
+    return { id: rule.id, name: rule.name, enabled: rule.enabled, eventType: rule.eventType, ...(postback ? { postback } : {}),
+      ...(reject ? { action: 'reject' } : { appId: rule.appId }) };
   });
   return { version: 2, revision: input.revision, apps, rules, fallbackAppId: input.fallbackAppId };
 }

@@ -12,6 +12,7 @@ const { randomUUID, randomBytes, createHash } = require('node:crypto');
 const request = require('supertest');
 const { createRedis, closeRedis } = require('../../src/redis');
 const { createQueue, KEYS } = require('../../src/queue');
+const { createRecentEvents, RECENT } = require('../../src/recent-events');
 const { createApp } = require('../../src/app');
 const { Worker } = require('../../src/worker');
 const { parseJob } = require('../../src/payload');
@@ -100,6 +101,7 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
   const { redis } = fixture;
   const queue = createQueue(redis, config);
   const routingStore = createRoutingStore(redis, config);
+  const recentEvents = createRecentEvents(redis, config);
   // This fixture always starts a new private Redis; never targets REDIS_URL.
   const reset = () => redis.flushdb();
 
@@ -137,8 +139,70 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
     await assert.rejects(small.enqueue(payload(event('b'), event('c'))));
     assert.equal(await redis.llen(KEYS.main), 0);
     assert.equal(await redis.hlen(KEYS.processing), 1);
+    assert.equal(await redis.zcard(RECENT.index), 1, 'rejected events must not appear in recent history');
     await small.ack(job);
     assert.equal(await small.enqueue(payload(event('b'), event('c'))), 2);
+  });
+
+  await t.test('only authenticated, accepted events enter redacted history; empty verification has no sample', async () => {
+    await reset();
+    const app = createApp({ config, queue, routingStore, recentEvents, logger });
+    const raw = JSON.stringify(payload(event('private-id', { replyToken: 'private-reply', source: { userId: 'private-user' } }), mfa()));
+    assert.equal((await request(app).post('/webhooks/line').set('content-type', 'application/json').send(raw)).status, 401);
+    assert.equal(await redis.zcard(RECENT.index), 0);
+    assert.equal((await request(app).post('/webhooks/line').set('content-type', 'application/json').set('x-line-signature', sign(raw)).send(raw)).status, 200);
+    const items = await recentEvents.list(defaultRouting(config));
+    assert.equal(items.length, 2);
+    assert.doesNotMatch(JSON.stringify(items), /private-|private message|cusa_mfa|choice|fingerprint|keyVersion/);
+    const queued = await redis.lrange(KEYS.main, 0, -1);
+    const rawJob = queued.map(JSON.parse).find(job => job.kind === 'line-raw');
+    assert.equal(Buffer.from(rawJob.rawBody, 'base64').toString(), raw, 'privacy projection cannot alter SSO signed payload');
+    const empty = JSON.stringify(payload());
+    await queue.enqueue(payload(), { body: Buffer.from(empty), signature: sign(empty) });
+    assert.equal(await redis.zcard(RECENT.index), 2);
+  });
+
+  await t.test('recent samples have individual expiry and are capped independently of queue length', async () => {
+    await reset();
+    const larger = createQueue(redis, { ...config, queueMaxLength: 400 });
+    await larger.enqueue(payload(event('first')));
+    const [first] = await redis.zrange(RECENT.index, 0, -1);
+    const ttl = await redis.ttl(RECENT.prefix + first);
+    assert.ok(ttl > RECENT.ttl - 5 && ttl <= RECENT.ttl);
+    await redis.pexpire(RECENT.prefix + first, 50);
+    await larger.enqueue(payload(event('second')));
+    await pause(80);
+    assert.equal(await redis.exists(RECENT.prefix + first), 0, 'new traffic must not extend older sample expiry');
+    assert.equal((await recentEvents.list(defaultRouting(config))).length, 1);
+    await larger.enqueue(payload(...Array.from({ length: 205 }, (_, i) => event(`burst-${i}`))));
+    assert.equal(await redis.zcard(RECENT.index), 200);
+    assert.equal((await redis.keys(RECENT.prefix + '*')).length, 200);
+    assert.equal((await recentEvents.list(defaultRouting(config))).length, 200);
+    assert.equal(await redis.llen(KEYS.main), 207, 'history limits must not discard queued work');
+  });
+
+  await t.test('a wrong history key type fails before any queue mutation', async () => {
+    await reset();
+    await redis.set(RECENT.index, 'wrong-type');
+    await assert.rejects(queue.enqueue(payload(event())));
+    assert.equal(await redis.llen(KEYS.main), 0);
+    assert.equal((await redis.keys(RECENT.prefix + '*')).length, 0);
+  });
+
+  await t.test('Reject consumes accepted work once and keeps the DLQ empty even after redelivery', async () => {
+    await reset();
+    const routing = await routingStore.get(); routing.fallbackAppId = null;
+    await routingStore.save(routing);
+    const worker = new Worker({ queue, routingStore, config, logger, forward: () => assert.fail('Reject must not forward') });
+    await queue.enqueue(payload(event('rejected')));
+    await worker.tick();
+    await queue.enqueue(payload(event('rejected', { deliveryContext: { isRedelivery: true } })));
+    await worker.tick();
+    assert.equal(await redis.llen(KEYS.main), 0);
+    assert.equal(await redis.hlen(KEYS.processing), 0);
+    assert.equal(await redis.llen(KEYS.dlq), 0);
+    assert.ok(await redis.ttl(KEYS.idempotency + 'rejected') > 3595);
+    assert.ok((await recentEvents.list(await routingStore.get())).every(item => item.route.kind === 'reject'));
   });
 
   await t.test('concurrent workers reserve a duplicate webhookEventId only once with EX 3600', async () => {
@@ -338,8 +402,9 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
       async revoke(token) { assert.equal(token, accessToken); revoked = true; return { ok: true }; }
     };
     const sso = createSsoService(redis, ssoConfig, client);
-    const app = createApp({ config: { ...config, sso: ssoConfig }, queue, routingStore, sso, logger });
+    const app = createApp({ config: { ...config, sso: ssoConfig }, queue, routingStore, recentEvents, sso, logger });
     assert.equal((await request(app).get('/v1/admin/webhook-routing')).status, 401);
+    assert.equal((await request(app).get('/v1/admin/recent-events')).status, 401);
     const start = await request(app).get('/auth/sso/login');
     assert.equal(start.status, 303);
     const authorize = new URL(start.headers.location);
@@ -364,6 +429,13 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
     const csrf = session.body.csrfToken;
     const loaded = await request(app).get('/v1/admin/webhook-routing').set('Cookie', sessionCookie);
     assert.equal(loaded.status, 200);
+    await queue.enqueue(payload(event()));
+    const recent = await request(app).get('/v1/admin/recent-events').set('Cookie', sessionCookie);
+    assert.equal(recent.status, 200);
+    assert.match(recent.headers['cache-control'], /no-store/);
+    assert.equal(recent.body.items.length, 1);
+    assert.equal(recent.body.routingRevision, loaded.body.revision);
+    assert.doesNotMatch(JSON.stringify(recent.body), /private message|fingerprint|access_token/);
     const edit = loaded.body; edit.apps.push({ id: 'added', name: 'Added app', url: 'https://added.example.test/webhook' });
     for (const headers of [{}, { Origin: 'https://evil.example.test', 'X-CSRF-Token': csrf }, { Origin: 'https://gateway.example.test', 'X-CSRF-Token': 'wrong' }]) {
       assert.equal((await request(app).put('/v1/admin/webhook-routing').set('Cookie', sessionCookie).set(headers).send(edit)).status, 403);
@@ -377,6 +449,7 @@ test('Redis TLS queue integration', { timeout: 30000 }, async t => {
     assert.equal((await request(app).put('/v1/admin/webhook-routing').set(headers).send(invalid)).status, 400);
     roles = ['viewer'];
     assert.equal((await request(app).get('/v1/admin/webhook-routing').set('Cookie', sessionCookie)).status, 403);
+    assert.equal((await request(app).get('/v1/admin/recent-events').set('Cookie', sessionCookie)).status, 403);
     assert.equal((await request(app).put('/v1/admin/webhook-routing').set(headers).send(saved.body)).status, 403);
     // Logout clears local session independently of current upstream role.
     assert.equal((await request(app).post('/auth/sso/logout').set(headers)).status, 200);

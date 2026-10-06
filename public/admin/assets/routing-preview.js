@@ -25,6 +25,7 @@
       steps.push({ id: rule.id, name: rule.name, reason: reason || 'matched' });
       if (!reason) { matched = rule; break; }
     }
+    if (matched?.action === 'reject' || (!matched && routing.fallbackAppId === null)) return { rejected: true, drop: true, rule: matched, steps };
     const app = routing.apps.find(item => item.id === (matched?.appId || routing.fallbackAppId));
     return { app, rule: matched, steps };
   }

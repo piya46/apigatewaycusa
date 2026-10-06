@@ -75,6 +75,11 @@ class Worker {
       return true;
     }
     if (reserved !== 'reserved') throw new Error('Unexpected reservation result');
+    if (target.drop) {
+      await this.queue.ack(claim);
+      this.logger.info('event_dropped', { reason: target.drop });
+      return true;
+    }
     const started = Date.now();
     const result = await this.forward(job, target);
     if (result.ok) {
