@@ -89,7 +89,7 @@ REDIS_URL=rediss://default:YOUR_PASSWORD@YOUR_ENDPOINT:YOUR_PORT
 2. อนุญาต requested scope `identity:read` และกำหนด API key scopes ตามตารางข้างต้น
 3. กำหนด **service-specific role `admin`** ให้ผู้ดูแลในแอปนี้ โดย introspection ต้องคืน `roles: ["admin"]` หรือมี `admin` รวมอยู่ด้วย สิทธิ์ CUSA Admin ส่วนกลางไม่ใช้แทน role ของแอป
 4. เปิด `https://api.reunion.scicu-alumni.com/admin/routes` แล้วกด “เข้าสู่ระบบด้วย CUSA SSO”
-5. เมนู “แอปปลายทาง” ใช้เพิ่มชื่อแอปกับ URL; เมนู “กฎส่งต่อ” ใช้เพิ่ม/ปิด/เรียงกฎและเลือกแอปสำรอง
+5. เมนู “กฎส่งต่อ” แสดง MFA → SSO และปลายทางเริ่มต้นให้อยู่แล้ว หากต้องการแยกไปแอปอื่น เลือกแม่แบบข้อความ / กดปุ่ม / เพิ่มเพื่อน ฟอร์มเลือกเหตุการณ์และแอปเป็นภาษาไทย เพิ่มแอปใหม่พร้อมกฎได้ กรณีปุ่ม LINE วางตัวอย่าง `action=register` เพื่อช่วยเติมเงื่อนไข
 6. ใช้ “ทดลองเส้นทาง” กดตัวอย่าง LINE MFA (`cusa_mfa` + `choice`) โดยไม่มีการส่ง event จริง จากนั้นกด “บันทึกการเปลี่ยนแปลง” เพื่อใช้กับงานถัดไป
 
 Gateway ใช้ `/api/sso/authorize`, `/api/sso/token`, `/api/sso/introspect`, `/api/sso/revoke` ตามไฟล์ OpenAPI เก็บ access token ใน Redis พร้อม TTL; เบราว์เซอร์ถือเพียง session cookie แบบ HttpOnly/Secure/SameSite=Lax ตรวจ `active`, `aud`, `exp`, `roles` และ `identity:read` ทุก protected operation โดยไม่ cache identity ฝั่ง gateway
@@ -154,3 +154,8 @@ Worker ใช้งานได้หลาย process แต่ถ้าต้�
 7. งานเก่าแบบราย event ที่เป็น `cusa_mfa` แต่ไม่มี raw body/signature จะเข้า DLQ ด้วย `missing_original` ไม่สร้างลายเซ็นทดแทน ให้ผู้ใช้ขอ MFA ใหม่ ไม่ replay งาน MFA ที่หมดอายุ
 
 หากต้อง rollback: หยุดรุ่นใหม่ก่อน ตรวจคิว/processing/DLQ และเก็บ raw jobs version 2 ไว้ในพื้นที่ private อย่าให้ worker รุ่นเก่าอ่านงานเหล่านี้ จากนั้นจึงวาง source รุ่นเดิมและคืน routing จาก backup หลังผู้ดูแลตรวจว่ามีการแก้กฎใหม่หลังอัปเกรดหรือไม่ ไม่มีการลบคิวหรือคืน backup อัตโนมัติ
+
+
+## อัปเดตหน้าจัดการ 1.1 → 1.2
+
+รุ่น 1.2 เพิ่มแม่แบบกฎ ฟอร์มสร้างกฎแบบมีขั้นตอน การอ่านตัวอย่างปุ่ม คำเตือนลำดับ และการแสดงเส้นทางพื้นฐาน ใช้ routing schema 2 เดิม ไม่ต้องเพิ่ม environment หรือสร้างกฎเริ่มต้นทับของเดิม ให้อัปโหลดไฟล์จากแพ็กเกจรวม `public/admin/assets/rule-builder.js` และ `rule-editor.js` แล้ว Restart App และเปิดหน้า admin ใหม่ `deploy:check` ตรวจว่าไฟล์ใหม่ครบด้วย หากยังใช้รุ่น 1.0 ให้ทำขั้นตอน migration ด้านบนก่อน

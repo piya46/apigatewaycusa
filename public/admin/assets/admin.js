@@ -54,7 +54,7 @@ let routing, savedRouting, csrfToken, expiresAt, sessionTimer;
 let dirty = false, busy = false, currentView = 'overview', editing, confirmResolve;
 const viewCopy = {
   overview: ['ภาพรวม', 'ภาพรวมการเชื่อมต่อ', 'ดูแลทุกเส้นทางจาก LINE ไปยังแอปของคุณได้ในที่เดียว', 'สร้างกฎส่งต่อ'],
-  rules: ['กฎส่งต่อ', 'กำหนดเส้นทางให้ทุก event', 'จัดลำดับเงื่อนไข แล้วเลือกแอปที่ใช่สำหรับแต่ละ event', 'เพิ่มกฎส่งต่อ'],
+  rules: ['กฎส่งต่อ', 'รับอะไร ส่งไปไหน', 'มีเส้นทางพื้นฐานให้แล้ว เพิ่มกฎเฉพาะเมื่ออยากแยกไปแอปอื่น', 'เพิ่มกฎส่งต่อ'],
   apps: ['แอปปลายทาง', 'แอปที่เชื่อมต่อ', 'จัดการปลายทางที่รับ Webhook และเพิ่มแอปใหม่ได้ที่นี่', 'เพิ่มแอปปลายทาง'],
   test: ['ทดลองเส้นทาง', 'ลองก่อน แล้วค่อยส่งจริง', 'ตรวจเงื่อนไขและแอปปลายทางก่อนบันทึกการเปลี่ยนแปลง', '']
 };
@@ -76,7 +76,7 @@ function updateSaveState() {
   $('reload').disabled = busy;
   $('primary-action').disabled = busy;
   $('logout').disabled = busy;
-  for (const node of document.querySelectorAll('#rules button, #rules input, #apps button, #fallback')) node.disabled = busy || node.dataset.boundary === 'true';
+  for (const node of document.querySelectorAll('#rules button, #rules input, #apps button, #fallback, [data-rule-template]')) node.disabled = busy || node.dataset.boundary === 'true';
 }
 function changed() {
   dirty = JSON.stringify(routing) !== JSON.stringify(savedRouting);
@@ -140,10 +140,12 @@ function emptyState(title, description, action) {
 }
 function renderOverview() {
   const active = routing.rules.filter(rule => rule.enabled).length;
-  $('stat-apps').textContent = routing.apps.length; $('stat-rules').textContent = routing.rules.length;
-  $('stat-active').textContent = active; $('stat-paused').textContent = `ปิดใช้งาน ${routing.rules.length - active} กฎ`;
+  $('protected-target').textContent = appName('sso');
+  $('route-count').textContent = `2 เส้นทางพื้นฐาน + ${routing.rules.length} กฎเพิ่มเติม`;
+  $('stat-apps').textContent = routing.apps.length; $('stat-rules').textContent = routing.rules.length + 2;
+  $('stat-active').textContent = active + 2; $('stat-paused').textContent = `ปิดใช้งาน ${routing.rules.length - active} กฎ`;
   $('stat-fallback').textContent = appName(routing.fallbackAppId); $('stat-fallback').title = appName(routing.fallbackAppId);
-  $('nav-rule-count').textContent = routing.rules.length; $('nav-app-count').textContent = routing.apps.length;
+  $('nav-rule-count').textContent = routing.rules.length + 2; $('nav-app-count').textContent = routing.apps.length;
   $('flow-destinations').replaceChildren(...routing.apps.slice(0, 2).map((app, index) => {
     const node = element('div', 'destination'), mark = element('span', `stat-icon ${index ? 'lavender' : 'peach'}`), copy = element('div');
     mark.append(icon(index ? 'message' : 'shield'));
@@ -153,24 +155,38 @@ function renderOverview() {
   if (routing.apps.length > 2) $('flow-destinations').append(element('span', 'flow-more', `และอีก ${routing.apps.length - 2} แอป`));
   $('overview-rules').replaceChildren(...routing.rules.slice(0, 4).map((rule, index) => {
     const node = button('', () => openRule(rule), 'mini-rule'), copy = element('div', 'mini-rule-copy');
-    copy.append(element('strong', '', rule.name), element('small', '', `${rule.eventType}${rule.postback ? ` · ${rule.postback.key}=${rule.postback.value}` : ''} → ${appName(rule.appId)}`));
+    copy.append(element('strong', '', rule.name), element('small', '', `${window.RuleBuilder.conditionLabel(rule)} → ${appName(rule.appId)}`));
     node.append(element('span', 'rule-number', String(index + 1).padStart(2, '0')), copy, badge(rule.enabled ? 'เปิดใช้งาน' : 'ปิดอยู่', rule.enabled ? 'active-chip' : 'paused-chip'), icon('chevron'));
     return node;
   }));
-  if (!routing.rules.length) $('overview-rules').append(emptyState('เริ่มสร้างเส้นทางแรก', 'MFA ส่งไป SSO ผ่านเส้นทางที่ป้องกันไว้แล้ว ส่วน event อื่นส่งไปยังแอปสำรอง', { label: 'เพิ่มกฎส่งต่อ', run: () => openRule() }));
+  const systemRow = (title, destination, description, action) => {
+    const row = button('', action, 'mini-rule system-rule'), copy = element('div', 'mini-rule-copy');
+    copy.append(element('strong', '', `${title} → ${destination}`), element('small', '', description));
+    row.append(icon('shield'), copy, badge('พื้นฐาน', 'active-chip'), icon('chevron')); return row;
+  };
+  $('overview-rules').prepend(systemRow('ยืนยันตัวตน MFA', appName('sso'), 'แยกให้อัตโนมัติ · ตรวจเป็นอันดับแรก', () => { switchView('rules'); $('protected-route').scrollIntoView({ block: 'center' }); }));
+  if (routing.rules.length > 4) $('overview-rules').append(button(`ดูกฎเพิ่มเติมอีก ${routing.rules.length - 4} กฎ`, () => switchView('rules'), 'text-button overview-more'));
+  $('overview-rules').append(systemRow('ข้อความและเหตุการณ์ที่เหลือ', appName(routing.fallbackAppId), 'ใช้เมื่อไม่ตรงกับกฎเพิ่มเติม · เปลี่ยนปลายทางได้', () => { switchView('rules'); $('fallback').focus(); }));
+
 }
 function renderRules(focusKey) {
+  $('custom-rules-panel').classList.toggle('is-empty', !routing.rules.length);
   const query = $('rule-search').value.trim().toLocaleLowerCase(), filter = $('rule-filter').value;
   const matches = routing.rules.filter(rule => `${rule.name} ${rule.eventType} ${rule.postback?.key || ''} ${rule.postback?.value || ''} ${appName(rule.appId)}`.toLocaleLowerCase().includes(query)
     && (filter === 'all' || (filter === 'enabled') === rule.enabled));
-  $('rules-result-count').textContent = `${matches.length} / ${routing.rules.length} กฎ`;
+  $('rules-result-count').textContent = `${matches.length} / ${routing.rules.length} กฎเพิ่มเติม`;
+  const conflicts = window.RuleBuilder.warnings(routing.rules);
+  $('rule-warnings').hidden = !conflicts.length;
+  $('rule-warnings').replaceChildren(icon('info'), element('div', '', `มีกฎ ${conflicts.length} รายการที่ถูกกฎด้านบนรับข้อมูลไปก่อน ดูคำแนะนำใต้กฎ แล้วเลื่อนกฎเฉพาะขึ้นหรือปิดกฎที่ซ้ำ`));
   $('rules').replaceChildren(...matches.map(rule => {
     const index = routing.rules.indexOf(rule), row = element('article', `rule-row${rule.enabled ? '' : ' is-paused'}`);
     const main = element('div', 'rule-main'), title = element('div', 'rule-title'), meta = element('div', 'rule-meta');
     title.append(element('h3', '', rule.name), badge(rule.enabled ? 'เปิดใช้งาน' : 'ปิดอยู่', rule.enabled ? 'active-chip' : 'paused-chip'));
-    meta.append(badge(rule.eventType, 'event-chip'));
+    meta.append(badge(window.RuleBuilder.eventLabel(rule.eventType), 'event-chip'));
     if (rule.postback) meta.append(element('code', 'condition-code', `${rule.postback.key}=${rule.postback.value}`));
     meta.append(icon('arrow-right'), element('span', 'rule-target', appName(rule.appId))); main.append(title, meta);
+    const conflict = conflicts.find(item => item.id === rule.id);
+    if (conflict) main.append(element('p', 'rule-warning', `ยังรับข้อมูลไม่ได้: ${conflict.kind === 'duplicate' ? 'เงื่อนไขซ้ำกับ' : 'ถูกกฎรับทั้งหมดบังโดย'} “${routing.rules.find(item => item.id === conflict.previousId).name}” ด้านบน`));
     const actions = element('div', 'rule-actions'), toggle = element('label', 'switch'), enabled = element('input');
     enabled.type = 'checkbox'; enabled.checked = rule.enabled; enabled.setAttribute('aria-label', `เปิดใช้งาน ${rule.name}`); enabled.dataset.focus = `toggle-${rule.id}`;
     enabled.addEventListener('change', () => { rule.enabled = enabled.checked; changed(); render(`toggle-${rule.id}`); });
@@ -183,14 +199,14 @@ function renderRules(focusKey) {
     const up = iconButton(`เลื่อน ${rule.name} ขึ้น`, 'up', () => move(-1)), down = iconButton(`เลื่อน ${rule.name} ลง`, 'down', () => move(1));
     up.dataset.boundary = String(index === 0); down.dataset.boundary = String(index === routing.rules.length - 1);
     up.dataset.focus = `up-${rule.id}`; down.dataset.focus = `down-${rule.id}`;
-    actions.append(toggle, element('span', 'divider'), up, down, iconButton(`แก้ไขกฎ ${rule.name}`, 'edit', () => openRule(rule)), iconButton(`ทำสำเนากฎ ${rule.name}`, 'copy', () => openRule(rule, true)), iconButton(`ลบกฎ ${rule.name}`, 'trash', async () => {
+    actions.append(toggle, element('span', 'divider'), up, down, iconButton(`ทดลองกฎ ${rule.name}`, 'play', () => simulateRule(rule)), iconButton(`แก้ไขกฎ ${rule.name}`, 'edit', () => openRule(rule)), iconButton(`ทำสำเนากฎ ${rule.name}`, 'copy', () => openRule(rule, true)), iconButton(`ลบกฎ ${rule.name}`, 'trash', async () => {
       if (await confirmAction('ลบกฎส่งต่อนี้?', `“${rule.name}” จะถูกลบจากฉบับแก้ไข และมีผลเมื่อบันทึก`, 'ลบกฎ')) {
         routing.rules = routing.rules.filter(item => item.id !== rule.id); changed(); render();
       }
     }));
     row.append(element('span', 'rule-number', String(index + 1).padStart(2, '0')), main, actions); return row;
   }));
-  if (!matches.length) $('rules').append(emptyState(routing.rules.length ? 'ไม่พบกฎที่ค้นหา' : 'ยังไม่มีกฎส่งต่อ', routing.rules.length ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ' : 'MFA ส่งไป SSO เสมอ ส่วน event อื่นส่งไปยังแอปสำรอง', routing.rules.length ? { label: 'ล้างตัวกรอง', run: () => { $('rule-search').value = ''; $('rule-filter').value = 'all'; renderRules(); updateSaveState(); } } : { label: 'เพิ่มกฎส่งต่อ', run: () => openRule() }));
+  if (!matches.length) $('rules').append(emptyState(routing.rules.length ? 'ไม่พบกฎที่ค้นหา' : 'เส้นทางพื้นฐานครอบคลุมอยู่แล้ว', routing.rules.length ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรองสถานะ' : 'เพิ่มกฎเมื่ออยากแยกข้อความ ปุ่ม หรือเหตุการณ์ไปยังแอปอื่น เลือกแม่แบบด้านบนเพื่อเริ่มได้เลย', routing.rules.length ? { label: 'ล้างตัวกรอง', run: () => { $('rule-search').value = ''; $('rule-filter').value = 'all'; renderRules(); updateSaveState(); } } : { label: 'เพิ่มกฎส่งต่อ', run: () => openRule() }));
   if (focusKey) {
     const focus = [...$('rules').querySelectorAll('[data-focus]')].find(node => node.dataset.focus === focusKey);
     if (focus && focus.dataset.boundary !== 'true') focus.focus({ preventScroll: true });
@@ -205,7 +221,7 @@ function renderApps() {
     mark.append(icon('apps')); head.append(mark);
     if (app.id === routing.fallbackAppId) head.append(badge('แอปสำรอง', 'default-chip'));
     const meta = element('div', 'app-meta'), count = routing.rules.filter(rule => rule.appId === app.id).length;
-    meta.append(badge(`${count} กฎอ้างอิง`), badge('HTTPS', 'active-chip'), badge(app.id === 'sso' ? 'LINE เดิม + Gateway token' : 'JSON ราย event + Gateway token'));
+    meta.append(badge(app.id === 'sso' ? 'รับ MFA อัตโนมัติ' : `${count} กฎเพิ่มเติม${app.id === routing.fallbackAppId ? ' + ปลายทางเริ่มต้น' : ''}`), badge('HTTPS', 'active-chip'), badge(app.id === 'sso' ? 'LINE เดิม + Gateway token' : 'JSON ราย event + Gateway token'));
     const actions = element('div', 'app-card-actions');
     actions.append(button('แก้ไขแอป', () => openApp(app), 'button secondary', 'edit'), iconButton(`คัดลอก URL ${app.name}`, 'copy', async () => {
       try { await navigator.clipboard.writeText(app.url); status('คัดลอก URL แล้ว'); }
@@ -241,7 +257,9 @@ function field(title, id, value, options = {}) {
 }
 function configureDialog(title, description, iconName, draft, kind, originalId) {
   if (!routing || busy) return false;
-  editing = { kind, draft, originalId }; $('edit-title').textContent = title; $('edit-description').textContent = description;
+  editing?.controller?.destroy();
+  editing = { kind, draft, originalId };
+  $('edit-dialog').classList.toggle('rule-builder-dialog', kind === 'rule'); $('edit-title').textContent = title; $('edit-description').textContent = description;
   $('edit-icon').replaceChildren(icon(iconName)); $('edit-fields').replaceChildren(); $('edit-error').hidden = true;
   $('edit-submit').textContent = originalId ? 'ใช้การแก้ไขนี้' : 'เพิ่มลงฉบับแก้ไข'; return true;
 }
@@ -256,27 +274,18 @@ function openApp(app) {
   }
   $('edit-dialog').showModal(); $('app-name').focus();
 }
-function openRule(rule, duplicate = false) {
+function openRule(rule, duplicate = false, template = 'postback') {
   if ((!rule || duplicate) && routing.rules.length >= 100) return status('เพิ่มได้สูงสุด 100 กฎ', true);
-  const draft = rule ? structuredClone(rule) : { id: crypto.randomUUID(), name: '', enabled: true, eventType: 'postback', appId: routing.fallbackAppId };
+  const draft = rule ? structuredClone(rule) : { id: crypto.randomUUID(), name: '', enabled: true, eventType: template, appId: routing.fallbackAppId };
   if (duplicate) { draft.id = crypto.randomUUID(); draft.name = `${draft.name.slice(0, 90)} (สำเนา)`; }
-  if (!configureDialog(duplicate ? 'ทำสำเนากฎส่งต่อ' : rule ? 'แก้ไขกฎส่งต่อ' : 'สร้างกฎส่งต่อ', 'เลือก event เงื่อนไข และแอปที่ต้องการส่งต่อ', 'route', draft, 'rule', duplicate ? undefined : rule?.id)) return;
-  const row = element('div', 'field-row'), appLabel = element('label', '', 'ส่งไปยังแอป'), select = element('select'); select.id = 'rule-app'; appOptions(select, draft.appId); appLabel.append(select);
-  row.append(field('ประเภท event', 'rule-type', draft.eventType, { list: 'event-types', maxLength: 64 }), appLabel);
-  const conditions = element('div', 'condition-fields'); conditions.id = 'rule-conditions';
-  const conditionRow = element('div', 'field-row');
-  conditionRow.append(field('ชื่อพารามิเตอร์', 'rule-key', draft.postback?.key || '', { required: false, maxLength: 128, placeholder: 'action' }), field('ค่าที่ต้องตรง', 'rule-value', draft.postback?.value || '', { required: false, maxLength: 1024, placeholder: 'register' }));
-  conditions.append(conditionRow, element('p', '', 'เช่น action=register · เว้นว่างเพื่อรับ postback ทั่วไป ส่วน cusa_mfa สงวนให้ SSO'));
-  conditions.hidden = draft.eventType !== 'postback';
-  const toggle = element('label', 'switch'), checkbox = element('input'); checkbox.id = 'rule-enabled'; checkbox.type = 'checkbox'; checkbox.checked = draft.enabled;
-  toggle.append(checkbox, document.createTextNode('เปิดใช้งานกฎนี้'));
-  $('edit-fields').append(field('ชื่อกฎ', 'rule-name', draft.name, { placeholder: 'เช่น ลงทะเบียนงานคืนสู่เหย้า' }), row, conditions, toggle);
-  $('rule-type').addEventListener('input', () => { conditions.hidden = $('rule-type').value !== 'postback'; });
-  $('edit-dialog').showModal(); $('rule-name').focus();
+  if (!configureDialog(duplicate ? 'ทำสำเนากฎส่งต่อ' : rule ? 'แก้ไขกฎส่งต่อ' : 'สร้างกฎส่งต่อ', 'เลือกเหตุการณ์ → เลือกแอป → ตรวจสรุป แล้วเพิ่มลงฉบับแก้ไข', 'route', draft, 'rule', duplicate ? undefined : rule?.id)) return;
+  editing.controller = window.RuleEditor.mount({ container: $('edit-fields'), draft, routing, originalId: editing.originalId, autoName: !rule, ui: { element, field, button } });
+  $('edit-dialog').showModal(); $('rule-type').focus();
 }
-function closeEdit() { $('edit-dialog').close(); editing = undefined; }
+for (const node of document.querySelectorAll('[data-rule-template]')) node.addEventListener('click', () => openRule(undefined, false, node.dataset.ruleTemplate));
+function closeEdit() { editing?.controller?.destroy(); $('edit-dialog').close(); editing = undefined; }
 for (const node of document.querySelectorAll('[data-close-dialog]')) node.addEventListener('click', closeEdit);
-$('edit-dialog').addEventListener('close', () => { editing = undefined; });
+$('edit-dialog').addEventListener('close', () => { editing?.controller?.destroy(); editing = undefined; $('edit-fields').replaceChildren(); });
 function fieldInvalid(id, message) { $(id).setCustomValidity(message); $(id).reportValidity(); }
 $('edit-form').addEventListener('submit', event => {
   event.preventDefault();
@@ -292,20 +301,26 @@ $('edit-form').addEventListener('submit', event => {
     } catch { return fieldInvalid('app-url', 'ใช้ URL แบบ HTTPS ที่ไม่มีชื่อผู้ใช้ รหัสผ่าน หรือ #'); }
     if (originalId) routing.apps[routing.apps.findIndex(app => app.id === originalId)] = draft; else routing.apps.push(draft);
   } else {
-    draft.name = $('rule-name').value.trim(); draft.eventType = $('rule-type').value.trim();
-    if (!draft.name) return fieldInvalid('rule-name', 'กรุณาระบุชื่อกฎ');
-    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(draft.eventType)) return fieldInvalid('rule-type', 'ใช้ชื่อประเภท event เช่น message หรือ postback');
-    draft.appId = $('rule-app').value; draft.enabled = $('rule-enabled').checked; delete draft.postback;
-    if (draft.eventType === 'postback') {
-      const key = $('rule-key').value, value = $('rule-value').value;
-      if (key || value) {
-        if (!key || key.trim() !== key) return fieldInvalid('rule-key', 'ระบุชื่อพารามิเตอร์ โดยไม่มีช่องว่างหัวท้าย');
-        if (key === 'cusa_mfa') return fieldInvalid('rule-key', 'cusa_mfa เป็นเส้นทางที่ป้องกันไว้ให้ SSO แล้ว ใช้กฎนี้กับพารามิเตอร์ของแอปอื่น');
-        if (!value || value.trim() !== value) return fieldInvalid('rule-value', 'ระบุค่าที่ต้องตรง โดยไม่มีช่องว่างหัวท้าย');
-        draft.postback = { key, value };
-      }
+    const value = editing.controller.read();
+    if (!value.name) return fieldInvalid('rule-name', 'กรุณาระบุชื่อกฎ');
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(value.eventType)) return fieldInvalid('rule-custom-type', 'ใช้ชื่อ event เช่น message หรือ postback');
+    if (value.postback) {
+      const { key, value: match } = value.postback;
+      if (!key || key.trim() !== key || /[\u0000-\u001f\u007f]/.test(key)) return fieldInvalid('rule-key', 'ระบุชื่อพารามิเตอร์ ไม่มีช่องว่างหัวท้ายหรืออักขระควบคุม');
+      if (key === 'cusa_mfa') return fieldInvalid('rule-key', 'cusa_mfa มีเส้นทางไป SSO ให้อยู่แล้ว ไม่ต้องสร้างกฎเพิ่ม');
+      if (!match || match.trim() !== match || /[\u0000-\u001f\u007f]/.test(match)) return fieldInvalid('rule-value', 'ระบุค่าที่ต้องตรง ไม่มีช่องว่างหัวท้ายหรืออักขระควบคุม');
     }
-    if (originalId) routing.rules[routing.rules.findIndex(rule => rule.id === originalId)] = draft; else routing.rules.push(draft);
+    const newApp = editing.controller.newApp();
+    if (newApp) {
+      if (!newApp.name) return fieldInvalid('rule-new-name', 'กรุณาระบุชื่อแอปใหม่');
+      try {
+        const url = new URL(newApp.url);
+        if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw new Error();
+        newApp.url = url.href;
+      } catch { return fieldInvalid('rule-new-url', 'ใช้ URL แบบ HTTPS ที่ไม่มีชื่อผู้ใช้ รหัสผ่าน หรือ #'); }
+      routing.apps.push(newApp);
+    }
+    routing.rules = window.RuleBuilder.placeRule(routing.rules, value, originalId, editing.controller.beforeId());
   }
   closeEdit(); changed(); render();
 });
@@ -327,8 +342,8 @@ for (const node of document.querySelectorAll('[data-sample]')) node.addEventList
   $('test-source').value = 'user'; $('test-user').value = `U${'0'.repeat(32)}`; $('test-age').value = '0';
   $('test-data-label').hidden = $('test-type').value !== 'postback'; clearSimulation();
 });
-$('simulation-form').addEventListener('submit', event => {
-  event.preventDefault(); if (!routing) return;
+function runSimulation() {
+  if (!routing) return;
   const result = window.RoutingPreview.previewRoute({ type: $('test-type').value, postback: { data: $('test-data').value }, source: { type: $('test-source').value, userId: $('test-user').value }, timestamp: Date.now() - Number($('test-age').value) * 1000 }, routing);
   $('test-placeholder').hidden = true; $('test-result').hidden = false;
   const heading = element('div', 'result-heading'); heading.append(icon('check-circle'), document.createTextNode(result.drop ? 'ปฏิเสธ MFA' : result.protected ? 'เส้นทาง MFA ที่ป้องกันไว้' : result.rule ? 'พบกฎที่ตรงเงื่อนไข' : 'ใช้แอปสำรอง'));
@@ -338,7 +353,16 @@ $('simulation-form').addEventListener('submit', event => {
     copy.append(element('small', '', reasons[step.reason])); row.append(icon(step.reason === 'matched' ? 'check-circle' : step.reason === 'disabled' ? 'pause' : 'corner'), copy); $('test-result').append(row);
   }
   if (!result.steps.length) $('test-result').append(element('p', 'muted small', 'ยังไม่มีกฎส่งต่อ ใช้แอปสำรองสำหรับทุก event'));
-});
+}
+
+$('simulation-form').addEventListener('submit', event => { event.preventDefault(); runSimulation(); });
+function simulateRule(rule) {
+  $('test-type').value = rule.eventType;
+  $('test-data').value = rule.postback ? new URLSearchParams([[rule.postback.key, rule.postback.value]]).toString() : '';
+  $('test-data-label').hidden = rule.eventType !== 'postback';
+  $('test-source').value = 'user'; $('test-user').value = `U${'0'.repeat(32)}`; $('test-age').value = '0';
+  switchView('test'); runSimulation();
+}
 
 const errors = {
   routing_conflict: 'มีผู้ดูแลคนอื่นเปลี่ยนข้อมูลแล้ว กรุณาโหลดข้อมูลล่าสุดก่อนบันทึก',

@@ -100,7 +100,7 @@ async function checkDeployment({ origin, publicOnly = false, pingSecret, lineCha
     && /text\/html/i.test(response.headers.get('content-type') || '')
     && Boolean(response.headers.get('content-security-policy'))
     && text.includes('id="editor"') && text.includes('/admin/assets/admin.js'));
-  for (const [file, marker] of [['admin.css', ':root'], ['admin.js', 'RoutingPreview'], ['line-contract.js', 'validMfa'], ['routing-preview.js', 'previewRoute']]) {
+  for (const [file, marker] of [['admin.css', ':root'], ['admin.js', 'RoutingPreview'], ['line-contract.js', 'validMfa'], ['routing-preview.js', 'previewRoute'], ['rule-builder.js', 'parseSample'], ['rule-editor.js', 'RuleEditor']]) {
     await check(`Admin asset ${file}`, `/admin/assets/${file}`, {}, (response, text) => response.status === 200 && text.includes(marker)
       && (file.endsWith('.css') ? /text\/css/i : /javascript/i).test(response.headers.get('content-type') || ''));
   }

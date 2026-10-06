@@ -54,7 +54,7 @@ test('deployment checks exercise Express with only empty verification jobs and n
   const { fetchImpl, calls } = fixture();
   const result = await run({ fetchImpl });
   assert.equal(result.code, 0, result.output);
-  assert.match(result.output, /16 passed, 0 failed/);
+  assert.match(result.output, /18 passed, 0 failed/);
   assert.ok(calls.some(call => call.options.headers['x-line-signature']));
   assert.equal(calls.filter(call => call.options.method === 'HEAD').length, 4);
 });
@@ -63,7 +63,7 @@ test('public-only checks never send credentials even when values are supplied', 
   const { fetchImpl, calls } = fixture();
   const result = await run({ fetchImpl, publicOnly: true });
   assert.equal(result.code, 0, result.output);
-  assert.match(result.output, /14 passed, 0 failed/);
+  assert.match(result.output, /16 passed, 0 failed/);
   assert.ok(calls.every(call => !call.options.headers['x-line-signature'] && !call.options.headers['x-ping-secret']));
 });
 
